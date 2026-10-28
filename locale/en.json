@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Custom mode",
-    "description": "Choose the system prompt, available tools, and automatic context for each conversation."
+    "description": "Customize the system prompt, enabled tools, and extra context for each conversation."
   }
 }

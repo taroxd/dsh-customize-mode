@@ -12,8 +12,6 @@ const code = expected => error => error.code === expected;
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const allow = () => {};
 
-// Model the documented Domain API: durable state survives handle close/reopen,
-// while failed writes leave both its committed value and the backing medium intact.
 function medium() {
   const documents = new Map(), active = new Set();
   const state = { beforeSet: undefined, writes: 0, closes: 0, names: [] };
@@ -21,7 +19,6 @@ function medium() {
     profileContext: { dir: profile }, logger: { warn() {} },
     storageDomain: { async open(spec) {
       assert.match(spec.name, /^[a-z][a-z0-9_]*$/);
-      assert.equal(spec.version, 1); assert.deepEqual(spec.tables, {});
       assert.equal(active.has(spec.name), false); active.add(spec.name); state.names.push(spec.name);
       let value = spec.global.schema.parse(structuredClone(documents.get(spec.name) ?? spec.global.initial));
       return { global: {

@@ -31,14 +31,12 @@ async function readEnvelope(request, signal, reportCleanupError) {
     try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(parts, total))); }
     catch { throw Object.assign(new SettingsError('INVALID_REQUEST'), { httpStatus: 400 }); }
   } finally {
-    // The carrier buffers the body. Cancellation releases unread bytes but
-    // must not replace a size/parse/abort error or stall endpoint teardown.
     if (!complete) reader.cancel().catch(reportCleanupError);
     try { reader.releaseLock(); } catch (error) { reportCleanupError(error); }
   }
 }
 
-export function createHost(ctx, z, options = {}) {
+export function createHost(ctx, z, options) {
   const defaults = options.defaults;
   const controller = createController(ctx, z, defaults);
   const preview = options.previewDefaultPrompt ?? createDefaultPromptPreview(ctx);
@@ -51,8 +49,6 @@ export function createHost(ctx, z, options = {}) {
     let rpcId = 'invalid-request';
     if (request.method !== 'POST' || new URL(request.url).pathname !== SETTINGS_PATH) return respond(rpcId, failure(new SettingsError('NOT_FOUND')), 404);
     if (closing.signal.aborted) return respond(rpcId, failure(new SettingsError('UNAVAILABLE')), 503);
-    // The shared carrier authenticates every request. Re-admission distinguishes
-    // its exact browser owner from API peers, even those with owner principals.
     const admission = ctx.connection.admit(request);
     if ('rejection' in admission) return respond(rpcId, failure(new SettingsError(admission.rejection === 401 ? 'UNAUTHORIZED' : 'FORBIDDEN')), admission.rejection);
     const peer = admission.peer;
@@ -71,7 +67,6 @@ export function createHost(ctx, z, options = {}) {
       if (operation.action === 'set') return respond(rpcId, { ok: true, value: controller.set(agent, operation, signal) });
       controller.assertAccess(agent, signal);
       if (operation.action === 'set-defaults') {
-        if (!defaults) throw new SettingsError('UNAVAILABLE');
         const saved = await defaults.set(operation, () => {
           if (peer !== ctx.connection.browserPeer || peer.principal.kind !== 'owner') throw new SettingsError('FORBIDDEN');
           controller.assertAccess(agent, signal);
@@ -98,7 +93,7 @@ export function createHost(ctx, z, options = {}) {
       if (ctx.agents.get(sessionId) !== agent || ctx.agentPresets.composedPreset(agent.ctx) !== PRESET_ID) throw new SettingsError('SESSION_CHANGED');
       const value = controller.read(agent, signal);
       if (value.revision !== revision) throw new SettingsError('REVISION_CONFLICT');
-      return respond(rpcId, { ok: true, value: { ...value, defaultPrompt, defaultsRevision: defaults?.current().revision ?? 0 } });
+      return respond(rpcId, { ok: true, value: { ...value, defaultPrompt, defaultsRevision: defaults.current().revision } });
     } catch (error) {
       if (!(error instanceof SettingsError)) ctx.logger.warn('customize-mode: settings request failed', error);
       const status = error instanceof SettingsError ? (error.code === 'REQUEST_TOO_LARGE' ? 413 : error.httpStatus ?? 200) : 200;
@@ -108,8 +103,6 @@ export function createHost(ctx, z, options = {}) {
 
   let detach;
   try {
-    // Exact Fetch routes coexist with the API Gateway interceptor. rpc.handle()
-    // in the supported DSH release reads an uninjected provider-side webServer.
     detach = ctx.connection.fetch.register({ path: SETTINGS_PATH, methods: ['POST'], requestBody: 'buffered', fetch: request => {
       const pending = fetchSettings(request).catch(error => {
         ctx.logger.warn('customize-mode: settings transport failed', error);

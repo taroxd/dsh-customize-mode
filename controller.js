@@ -36,8 +36,6 @@ export function createController(ctx, z, defaults) {
   function beginTurn(agent) {
     const entry = agents.get(agent);
     if (!inMode(agent)) return;
-    // Session observers cannot veto an append. Abort synchronously on failure:
-    // AgentLoop checks this signal before claiming messages or assembling prompts.
     if (entry.applying) {
       stop(agent, new SettingsError('BUSY'));
       return;
@@ -90,8 +88,7 @@ export function createController(ctx, z, defaults) {
           return filterTimeContext(decision, effective.config);
         }, { prepend: true }));
         if (agent.status === 'running' && inMode(agent)) {
-          // An already assembled turn cannot safely adopt registrations mid-flight.
-          // Preserve its inbox and require a fresh turn rather than leak policy.
+          // Cancel an already running turn when hot-reloading the plugin so it does not run with mixed policy.
           entry.error = diagnostic(new SettingsError('POLICY_UNAVAILABLE'));
           entry.catalog = agent.ctx.tools.schemas(agent).filter(tool => tool.name !== 'run_code')
             .map(({ name, description }) => ({ name, description }));
@@ -122,9 +119,8 @@ export function createController(ctx, z, defaults) {
       const eligible = () => source === 'startup' && ctx.agents.get(agent.id) === agent &&
         ctx.agents.roots().includes(agent) && header?.isSeeded === false &&
         !header.parentSession && !header.origin && agent.session.inheritedEventCount === 0;
-      if (defaults && eligible() && snapshotOf(agent).revision === 0) {
-        // Capture once at creation, even before a blank session selects its preset.
-        // These records stay inert in every other preset and replay without global reads.
+      if (eligible() && snapshotOf(agent).revision === 0) {
+        // Initialize new root sessions with the current profile defaults.
         commit(agent, snapshotOf(agent), defaults.current().config, () => {
           if (!eligible()) throw new SettingsError('SESSION_CHANGED');
         });
@@ -165,7 +161,6 @@ export function createController(ctx, z, defaults) {
     assertAccess(agent, signal);
     attach(agent);
     const entry = agents.get(agent);
-    // Refresh the catalog only outside a running turn; never lift its live mask.
     if (agent.status === 'idle' && !entry.applying) applySnapshot(agent, snapshotOf(agent));
     const visible = new Set(agent.ctx.tools.schemas(agent).map(tool => tool.name));
     return { ...valueOf(agent, 'get'), tools: agents.get(agent).catalog.map(tool => ({ ...tool, visible: visible.has(tool.name) })) };
@@ -189,8 +184,6 @@ export function createController(ctx, z, defaults) {
     const cursor = agent.session.seq;
     const next = { protocol: PROTOCOL, revision: before.revision + 1, config, action: 'set' };
     try {
-      // Persist only: neither a running turn nor an observer-started turn may
-      // see provisional settings. Runtime validation belongs to turn/start.
       agent.session.append('command/run', { commandId, name: PRESET_ID, source: { kind: 'user' } });
       verify();
       if (snapshotOf(agent).revision !== before.revision) throw new SettingsError('REVISION_CONFLICT');

@@ -11,8 +11,7 @@ function snapshot(value) {
   return Object.freeze({ revision: value.revision, config: Object.freeze(config) });
 }
 
-// The domain handle is already hydrated. Its lifetime belongs to this store.
-export function createDefaultsStore(domain, report = () => {}) {
+export function createDefaultsStore(domain, report) {
   let current = snapshot(domain.global.get());
   let tail = Promise.resolve(), closing = false, disposal;
   return {
@@ -29,7 +28,6 @@ export function createDefaultsStore(domain, report = () => {}) {
         const next = snapshot({ revision: current.revision + 1, config });
         try { await domain.global.set(next); }
         catch (error) { report(error); throw new SettingsError('DEFAULTS_SAVE_FAILED'); }
-        // Durability wins over a late cancellation; never claim a committed write failed.
         current = next;
         return current;
       });
@@ -44,9 +42,7 @@ export function createDefaultsStore(domain, report = () => {}) {
 }
 
 export async function openDefaults(ctx, z) {
-  // The shipped storage root is shared across profiles, unlike workspace settings.
   const identity = ctx.profileContext.dir;
-  if (typeof identity !== 'string' || !identity) throw new SettingsError('UNAVAILABLE');
   const name = 'dsh_customize_mode_defaults_' + createHash('sha256').update(identity).digest('hex');
   const schema = z.custom(value => { try { snapshot(value); return true; } catch { return false; } });
   const domain = await ctx.storageDomain.open({

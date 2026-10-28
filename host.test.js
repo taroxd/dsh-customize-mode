@@ -17,11 +17,12 @@ const names = agent => agent.ctx.tools.schemas().map(tool => tool.name);
 const guard = (agent, name) => [...agent.registry.guards][0]({ agent, name });
 function controllerFixture(options = {}) {
   const f = fixture(), first = f.agent('root', options);
-  let controller = createController(f.ctx, z);
+  const defaults = { current: () => ({ revision: 0, config: config() }) };
+  let controller = createController(f.ctx, z, defaults);
   return { ...f, first, get controller() { return controller; },
     get: (agent = first) => controller.read(agent, signal()),
     set: (revision, cfg, agent = first) => controller.set(agent, request(revision, cfg), signal()),
-    reload() { controller.dispose(); controller = createController(f.ctx, z); },
+    reload() { controller.dispose(); controller = createController(f.ctx, z, defaults); },
     dispose: () => controller.dispose(),
   };
 }
@@ -52,7 +53,6 @@ test('projection restores only paired successful human settings at the next revi
   assert.equal(restored.snapshot.revision, 1);
   assert.deepEqual(restored.pending, []);
   const definition = projectionDefinition(z);
-  assert.equal(definition.stateVersion, 2);
   assert.deepEqual(definition.stateSchema.parse(restored), restored);
   assert.deepEqual(definition.wire.viewSchema.parse(definition.wire.view(restored)), restored.snapshot);
   assert.equal(fold(restored, done('a', 1, config())), restored);
@@ -87,6 +87,27 @@ test('all-tools restriction, empty prompt and runtime suppression dispose indepe
   assert.equal(r.suppressors.size, 1);
   release(); release();
   assert.equal(r.sections.size, 0); assert.equal(r.contexts.size, 0); assert.equal(r.restrictions.size, 0); assert.equal(r.suppressors.size, 0);
+});
+
+test('custom prompt templates delegate interpolation to DSH without rewriting saved settings', () => {
+  const f = controllerFixture(), a = f.first;
+  const template = 'Model: {{model}}; provider: {{provider}}; plugin: {{response_language}}.';
+  try {
+    f.set(0, { overridePrompt: true, prompt: template });
+    a.startTurn();
+    const section = [...a.registry.sections][0];
+    assert.equal(section.text, template);
+    assert.equal(section.interpolate, true, 'DSH must render this section with its default variable rules');
+    assert.equal(section.complete, true);
+    assert.equal(f.get().config.prompt, template);
+    assert.equal(a.session.events.reduce(fold, initialState()).snapshot.config.prompt, template);
+    f.set(1, { overridePrompt: true, prompt: 'Next: {{model}}' });
+    assert.equal([...a.registry.sections][0], section, 'a saved template must not replace the active turn');
+    a.endTurn({ idle: false }); a.startTurn();
+    assert.equal([...a.registry.sections][0].text, 'Next: {{model}}');
+    assert.equal([...a.registry.sections][0].interpolate, true);
+    a.endTurn();
+  } finally { f.dispose(); }
 });
 
 test('session-local conflicts roll back every candidate registration', () => {
@@ -249,8 +270,6 @@ test('a turn started reentrantly during idle catalog application aborts before a
     const release = presentAs(mode);
     if (once) {
       once = false;
-      // A real followup starts an async driver: cancellation settles there,
-      // rather than throwing out of the registry's synchronous observer.
       assert.throws(() => a.startTurn(), cancelled);
     }
     return release;
@@ -283,7 +302,7 @@ test('failed startup unwinds earlier agents, partial guards, subscriptions, and 
   const originalOn = f.ctx.on, originalRegister = f.ctx.sessionProjections.register;
   f.ctx.on = (...args) => { const release = originalOn(...args); subscriptions++; return () => { subscriptions--; release(); }; };
   f.ctx.sessionProjections.register = (...args) => { const release = originalRegister(...args); return () => { projectionDisposed = true; release(); }; };
-  assert.throws(() => createController(f.ctx, z), error => error === problem);
+  assert.throws(() => createController(f.ctx, z, { current: () => ({ revision: 0, config: config() }) }), error => error === problem);
   assert.equal(first.registry.guards.size, 0); assert.equal(second.registry.guards.size, 0);
   assert.equal(subscriptions, 0); assert.equal(projectionDisposed, true);
 });

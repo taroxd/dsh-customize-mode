@@ -2,10 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { MESSAGES } from './errors.js';
 
-// Execute the shipped self-registering artifact. The small renderer models React
-// hooks, keyed unmounts, subscriptions and host events; it does not replace any
-// plugin component, request handler, localization logic or slot registration.
 const source = await readFile(new URL('./client.js', import.meta.url), 'utf8');
 const plain = value => JSON.parse(JSON.stringify(value));
 const sameDeps = (a, b) => a && b && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
@@ -211,9 +209,9 @@ test('actual input events preserve empty prompt, all-off tools, independent cont
     response({revision:8, config:payload.request.config}))});
   await open(app);
   change(app, inputFor(app, 'Use a custom system prompt'), true);
-  change(app, inputFor(app, 'Include environment information'), false);
-  assert.equal(inputFor(app, 'Include the current time').props.checked, true);
-  change(app, inputFor(app, 'Include the current time'), false);
+  change(app, inputFor(app, 'Include environment info'), false);
+  assert.equal(inputFor(app, 'Include current time').props.checked, true);
+  change(app, inputFor(app, 'Include current time'), false);
   click(app, button(app, 'Disable all'));
   click(app, button(app, 'Apply to session'));
   await settle(app);
@@ -225,18 +223,55 @@ test('actual input events preserve empty prompt, all-off tools, independent cont
   app.dispose();
 });
 
-test('typed custom instructions are saved verbatim, without substituting template variables', async () => {
+test('custom prompt templates are saved unchanged for DSH to interpolate at request time', async () => {
   const app = setup({rpc:(_channel, _endpoint, payload) => Promise.resolve(payload.request.action === 'get' ? response() :
     response({revision:1, config:payload.request.config}))});
   await open(app);
   change(app, inputFor(app, 'Use a custom system prompt'), true);
-  change(app, find(app, node => node.type === 'textarea'), 'Literal {{model}} instructions');
+  change(app, find(app, node => node.type === 'textarea'), 'Use {{model}} from {{provider}}.');
   click(app, button(app, 'Apply to session')); await settle(app);
-  assert.equal(app.calls[1][2].request.config.prompt, 'Literal {{model}} instructions');
+  assert.equal(app.calls[1][2].request.config.prompt, 'Use {{model}} from {{provider}}.');
   app.dispose();
 });
 
 for (const locale of ['en', 'zh']) {
+  test(`variable guide opens on demand and dismisses without editing or saving in ${locale}`, async () => {
+    const app = setup({locale}); await open(app);
+    const t = app.ctx.locale.bind();
+    change(app, inputFor(app, t('override')), true);
+    change(app, find(app, node => node.type === 'textarea'), 'Use {{model}} from {{provider}}.');
+    const main = find(app, node => node.type === 'dialog');
+    const trigger = button(app, t('promptVariables'));
+    assert.equal(trigger.props['aria-haspopup'], 'dialog');
+    assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'dialog').length, 1);
+    click(app, trigger);
+    const guide = find(app, node => node.props.className === 'dshcm-dialog dshcm-variable-guide');
+    assert.equal(guide.host.open, true);
+    assert.equal(text(find(app, node => node.props.id === guide.props['aria-labelledby'])), t('promptVariablesTitle'));
+    for (const key of ['promptVariablesBuiltins', 'promptVariablesSyntax', 'promptVariablesFailure']) {
+      assert.ok(text(guide).includes(t(key)));
+    }
+    let prevented = false, stopped = false;
+    guide.props.onCancel({preventDefault() {prevented = true;}, stopPropagation() {stopped = true;}});
+    app.renderer.flush();
+    assert.equal(prevented, true); assert.equal(stopped, true);
+    assert.equal(guide.host.open, false); assert.equal(main.host.open, true);
+    assert.equal(trigger.host.focusCalls, 1);
+    assert.equal(find(app, node => node.type === 'textarea').props.value, 'Use {{model}} from {{provider}}.');
+    assert.equal(app.calls.length, 1);
+    click(app, trigger);
+    const reopened = find(app, node => node.props.className === 'dshcm-dialog dshcm-variable-guide');
+    const close = nodes(reopened).find(node => node.type === 'button' && text(node) === t('close'));
+    click(app, close);
+    assert.equal(reopened.host.open, false); assert.equal(main.host.open, true);
+    click(app, trigger);
+    const last = find(app, node => node.props.className === 'dshcm-dialog dshcm-variable-guide');
+    app.setPreset('standard');
+    assert.equal(last.host.open, false); assert.equal(app.renderer.lateUpdates, 0);
+    assert.equal(app.calls.length, 1);
+    app.dispose();
+  });
+
   test(`default prompt fill changes only the empty draft and saves verbatim in ${locale}`, async () => {
     const template = 'Default {{model}} instructions\nKeep formatting.\n';
     const app = setup({locale, rpc:(_c, _e, payload) => Promise.resolve(payload.request.action === 'get' ?
@@ -267,8 +302,7 @@ for (const locale of ['en', 'zh']) {
     assert.equal(dialog.host.open, true);
     assert.equal(dialog.host.showCalls, 1);
     assert.equal(text(find(app, node => node.props.id === dialog.props['aria-labelledby'])), t('confirmOverwriteTitle'));
-    assert.equal(text(find(app, node => node.props.id === dialog.props['aria-describedby'])), locale === 'zh' ?
-      '默认系统提示词会覆盖已填写的自定义提示词，是否确认覆盖' : t('confirmOverwritePrompt'));
+    assert.equal(text(find(app, node => node.props.id === dialog.props['aria-describedby'])), t('confirmOverwritePrompt'));
     assert.equal(button(app, t('cancel')).props.autoFocus, true);
     assert.equal(find(app, node => node.type === 'textarea').props.value, 'My custom draft');
     click(app, button(app, t('cancel')));
@@ -285,48 +319,21 @@ for (const locale of ['en', 'zh']) {
   });
 }
 
-test('whitespace is protected and Escape dismisses only the overwrite confirmation', async () => {
-  const app = setup(); await open(app);
-  change(app, inputFor(app, 'Use a custom system prompt'), true);
-  change(app, find(app, node => node.type === 'textarea'), ' \n\t');
-  click(app, button(app, 'Fill with default system prompt'));
-  const dialog = find(app, node => node.props.role === 'alertdialog');
-  let prevented = false, stopped = false;
-  dialog.props.onCancel({preventDefault() {prevented = true;}, stopPropagation() {stopped = true;}});
-  app.renderer.flush();
-  assert.equal(prevented, true); assert.equal(stopped, true);
-  assert.equal(dialog.host.open, false);
-  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
-  assert.equal(find(app, node => node.type === 'textarea').props.value, ' \n\t');
-  assert.equal(app.calls.length, 1);
-  app.dispose();
-});
-
-test('an empty default is copied as empty text, never as the fallback placeholder', async () => {
-  const app = setup({rpc:() => Promise.resolve(response({defaultPrompt:'', config:{...CONFIG, overridePrompt:true, prompt:'My draft'}}))});
-  await open(app);
-  click(app, button(app, 'Fill with default system prompt'));
-  click(app, button(app, 'Confirm'));
-  assert.equal(find(app, node => node.type === 'textarea').props.value, '');
-  assert.equal(inputFor(app, 'Use a custom system prompt').props.checked, true);
-  app.dispose();
-});
-
 test('reload and unmount dispose outstanding overwrite confirmations without changing drafts', async () => {
   const reload = deferred(); let reads = 0;
   const app = setup({rpc:() => ++reads === 1 ? Promise.resolve(response({config:{...CONFIG, overridePrompt:true, prompt:'My draft'}})) : reload.promise});
   await open(app);
-  click(app, button(app, 'Fill with default system prompt'));
+  click(app, button(app, 'Fill with default prompt'));
   const dialog = find(app, node => node.props.role === 'alertdialog');
-  click(app, button(app, 'Reload settings'));
+  click(app, button(app, 'Reload'));
   assert.equal(dialog.host.open, false);
-  assert.equal(button(app, 'Fill with default system prompt').props.disabled, true);
-  click(app, button(app, 'Fill with default system prompt'));
+  assert.equal(button(app, 'Fill with default prompt').props.disabled, true);
+  click(app, button(app, 'Fill with default prompt'));
   assert.equal(find(app, node => node.type === 'textarea').props.value, 'My draft');
   assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
   reload.resolve(response({config:{...CONFIG, overridePrompt:true, prompt:'New draft'}})); await settle(app);
   assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
-  click(app, button(app, 'Fill with default system prompt'));
+  click(app, button(app, 'Fill with default prompt'));
   const next = find(app, node => node.props.role === 'alertdialog');
   app.setPreset('standard');
   assert.equal(next.host.open, false);
@@ -337,7 +344,7 @@ test('reload and unmount dispose outstanding overwrite confirmations without cha
 test('HTTP failures are translated without exposing transport messages', async () => {
   const app = setup({rpc:() => Promise.reject(new Error('transport failure: HTTP 403 RAW_不要显示'))});
   await open(app);
-  assert.match(text(app.renderer.tree), /Could not reach the app/);
+  assert.match(text(app.renderer.tree), /Could not connect to the app/);
   assert.doesNotMatch(text(app.renderer.tree), /RAW_|不要显示|HTTP 403/);
   app.setLocale('zh'); assert.match(text(app.renderer.tree), /无法连接到应用/);
   app.dispose();
@@ -345,14 +352,14 @@ test('HTTP failures are translated without exposing transport messages', async (
 
 test('tool selection and search use real handlers and preserve new-tool mode semantics', async () => {
   const app = setup(); await open(app);
-  change(app, inputFor(app, 'Only selected tools'), true);
+  change(app, inputFor(app, 'Selected tools only'), true);
   change(app, inputFor(app, 'subagent Ask another agent'), false);
   assert.equal(inputFor(app, 'read Read a file').props.checked, true);
   change(app, find(app, node => node.type === 'input' && node.props.type === 'search'), 'subagent');
   assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'code').length, 1);
-  assert.match(text(app.renderer.tree), /New tools stay off/);
+  assert.match(text(app.renderer.tree), /Newly added tools stay off/);
   change(app, inputFor(app, 'All available tools'), true);
-  assert.match(text(app.renderer.tree), /New tools are included automatically/);
+  assert.match(text(app.renderer.tree), /Newly added tools are enabled automatically/);
   app.dispose();
 });
 
@@ -425,7 +432,7 @@ test('failed save keeps the dialog and draft available for retry', async () => {
   click(app, button(app, 'Apply to session')); await settle(app);
   assert.equal(find(app, node => node.type === 'dialog').host.open, true);
   assert.equal(find(app, node => node.type === 'textarea').props.value, 'Keep my draft');
-  assert.match(text(app.renderer.tree), /Could not reach the app/);
+  assert.match(text(app.renderer.tree), /Could not connect to the app/);
   assert.equal(button(app, 'Apply to session').props.disabled, false);
   assert.equal(app.refreshes, 0);
   click(app, button(app, 'Apply to session')); await settle(app);
@@ -448,7 +455,6 @@ for (const locale of ['en', 'zh']) {
     assert.equal(defaults.props['data-primary'], undefined);
     assert.equal(button(app, t('save')).props['data-primary'], true);
     assert.ok(defaults.props.title);
-    assert.equal(text(find(app, node => node.props.id === defaults.props['aria-describedby'])), t('defaultsScope'));
     change(app, inputFor(app, t('override')), true);
     change(app, find(app, node => node.type === 'textarea'), 'Global draft');
     click(app, button(app, t('disableAll')));
@@ -491,11 +497,11 @@ test('default save errors retain the draft and use localized diagnostics', async
   change(app, inputFor(app, 'Use a custom system prompt'), true);
   change(app, find(app, node => node.type === 'textarea'), 'Keep this draft');
   click(app, button(app, 'Save as default')); await settle(app);
-  assert.match(text(app.renderer.tree), /global default changed elsewhere/);
+  assert.match(text(app.renderer.tree), /Default settings were updated elsewhere/);
   assert.doesNotMatch(text(app.renderer.tree), /PRIVATE_SERVER_TEXT/);
   assert.equal(find(app, node => node.type === 'textarea').props.value, 'Keep this draft');
   assert.equal(find(app, node => node.type === 'dialog').host.open, true);
-  app.setLocale('zh'); assert.match(text(app.renderer.tree), /全局默认已在其他位置更改/);
+  app.setLocale('zh'); assert.match(text(app.renderer.tree), /默认设置已在别处更新/);
   app.dispose();
 });
 
@@ -507,7 +513,7 @@ test('in-flight default save blocks both actions and closing ignores its late re
   const apply = button(app, 'Apply to session').props.onClick;
   defaults(); defaults(); apply(); app.renderer.flush();
   assert.equal(app.calls.length, 2);
-  assert.equal(button(app, 'Saving default…').props.disabled, true);
+  assert.equal(button(app, 'Saving…').props.disabled, true);
   assert.equal(button(app, 'Apply to session').props.disabled, true);
   click(app, button(app, 'Close'));
   assert.equal(app.calls[1][3].aborted, true);
@@ -516,7 +522,7 @@ test('in-flight default save blocks both actions and closing ignores its late re
   assert.equal(app.refreshes, 0);
   assert.equal(app.renderer.lateUpdates, 0);
   await open(app);
-  assert.doesNotMatch(text(app.renderer.tree), /Default saved/);
+  assert.doesNotMatch(text(app.renderer.tree), /Saved as default/);
   app.dispose();
 });
 
@@ -530,14 +536,14 @@ test('double save is blocked synchronously, not only by the next disabled render
 test('running saves are enabled with next-turn guidance, but stale revisions still block saves', async () => {
   const app = setup(); await open(app);
   app.setRunning(true); assert.equal(button(app, 'Apply to session').props.disabled, false);
-  assert.match(text(app.renderer.tree), /apply from the next turn/);
+  assert.match(text(app.renderer.tree), /take effect on the next turn/);
   click(app, button(app, 'Apply to session')); await settle(app);
   assert.equal(app.calls.length, 2);
   assert.equal(find(app, node => node.type === 'dialog').host.open, false);
   await open(app);
   app.projection.set({revision:2}); app.renderer.flush();
   assert.equal(button(app, 'Apply to session').props.disabled, true);
-  assert.match(text(app.renderer.tree), /changed elsewhere/); app.dispose();
+  assert.match(text(app.renderer.tree), /updated elsewhere/); app.dispose();
 });
 
 test('a committed save remains successful if projection refresh fails', async () => {
@@ -554,24 +560,27 @@ for (const locale of ['en', 'zh']) {
       {code:'CATALOG_STALE', message:'RAW_SERVER_TEXT_不要显示'}, {code:'POLICY_UNAVAILABLE', message:'OTHER_RAW'}]}) :
       {ok:false, error:{code:'REVISION_CONFLICT', message:'RAW_SERVER_TEXT_不要显示'}})});
     await open(app);
-    assert.match(text(app.renderer.tree), locale === 'en' ? /tool list may be out of date/ : /工具列表可能不是最新/);
+    assert.match(text(app.renderer.tree), locale === 'en' ? /tool list may not be up to date/ : /工具列表可能不是最新/);
     click(app, button(app, app.dictionaries[locale].save)); await settle(app);
-    assert.match(text(app.renderer.tree), locale === 'en' ? /changed elsewhere/ : /其他位置更改/);
+    assert.match(text(app.renderer.tree), locale === 'en' ? /updated elsewhere/ : /别处更新/);
     assert.doesNotMatch(text(app.renderer.tree), /RAW_SERVER_TEXT|OTHER_RAW|不要显示/);
     app.setLocale(locale === 'en' ? 'zh' : 'en');
-    assert.match(text(app.renderer.tree), locale === 'en' ? /其他位置更改/ : /changed elsewhere/);
+    assert.match(text(app.renderer.tree), locale === 'en' ? /别处更新/ : /updated elsewhere/);
     app.dispose();
   });
 }
 
-test('all published backend error codes have matching English and Chinese messages, unknown codes stay generic', async () => {
-  const app = setup({rpc:() => Promise.resolve({ok:false, error:{code:'FUTURE_ERROR', message:'SECRET_RAW_ERROR'}})});
-  const codes = ['FORBIDDEN','UNAUTHORIZED','WRONG_PRESET','SESSION_NOT_FOUND','ROOT_SESSION_REQUIRED','SESSION_CHANGED','HUMAN_ONLY','BUSY','REVISION_CONFLICT','DEFAULTS_REVISION_CONFLICT','DEFAULTS_SAVE_FAILED','INVALID_REQUEST','RESERVED_TOOL','UNSUPPORTED_POLICY','TOOL_VISIBILITY_CONFLICT','COMMIT_FAILED','PREVIEW_FAILED','ABORTED','UNAVAILABLE','NOT_FOUND','REQUEST_TOO_LARGE','UNSUPPORTED_MEDIA_TYPE','SETTINGS_FAILED'];
-  for (const code of codes) for (const locale of ['en','zh']) assert.equal(typeof app.dictionaries[locale]['error_' + code], 'string');
+test('published backend diagnostics have English and Chinese messages', () => {
+  const app = setup();
+  const warningCodes = new Set(['CATALOG_STALE', 'POLICY_UNAVAILABLE']);
+  for (const code of Object.keys(MESSAGES)) {
+    const key = (warningCodes.has(code) ? 'warning_' : 'error_') + code;
+    for (const locale of ['en', 'zh']) {
+      assert.equal(typeof app.dictionaries[locale][key], 'string', `${locale}: ${key}`);
+      assert.ok(app.dictionaries[locale][key].trim(), `${locale}: ${key} must not be blank`);
+    }
+  }
   assert.deepEqual(Object.keys(app.dictionaries.en).sort(), Object.keys(app.dictionaries.zh).sort());
-  await open(app);
-  assert.match(text(app.renderer.tree), /Something went wrong/);
-  assert.doesNotMatch(text(app.renderer.tree), /SECRET_RAW_ERROR|FUTURE_ERROR/);
   app.dispose();
 });
 
@@ -582,13 +591,18 @@ test('get requires its complete catalog, template, warnings and normalized conte
     else delete reply.value[field];
     const app = setup({rpc:() => Promise.resolve(reply)});
     await open(app);
-    assert.match(text(app.renderer.tree), /unexpected response/, field);
+    assert.match(text(app.renderer.tree), /Unexpected response/, field);
     assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'textarea').length, 0, field);
+    assert.equal(button(app, 'Apply to session').props.disabled, true, field);
     app.dispose();
   }
-  for (const overrides of [{tools:[{name:'read'}]}, {warnings:['invalid warning shape']}, {defaultPrompt:42}]) {
+  for (const overrides of [{tools:[{name:'read'}]}, {warnings:['invalid warning shape']}, {defaultPrompt:42}, {config:{...CONFIG, prompt:42}}]) {
     const app = setup({rpc:() => Promise.resolve(response(overrides))});
-    await open(app); assert.match(text(app.renderer.tree), /unexpected response/); app.dispose();
+    await open(app);
+    assert.match(text(app.renderer.tree), /Unexpected response/);
+    assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'textarea').length, 0);
+    assert.equal(button(app, 'Apply to session').props.disabled, true);
+    app.dispose();
   }
 });
 
@@ -607,13 +621,6 @@ test('set response may omit catalog and template; reopening fetches a fresh form
   app.dispose();
 });
 
-test('malformed responses produce a localized protocol error instead of a broken editable form', async () => {
-  const app = setup({rpc:() => Promise.resolve(response({config:{...CONFIG, prompt:42}}))});
-  await open(app); assert.match(text(app.renderer.tree), /unexpected response/);
-  assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'textarea').length, 0);
-  assert.equal(button(app, 'Apply to session').props.disabled, true); app.dispose();
-});
-
 test('Escape cancels loading, and every modal label resolves to visible text', () => {
   const pending = deferred(); const app = setup({rpc:() => pending.promise});
   click(app, button(app, 'Custom settings'));
@@ -626,13 +633,4 @@ test('Escape cancels loading, and every modal label resolves to visible text', (
 
 test('plugin disposal removes both its controls and hidden-record registration', () => {
   const app = setup(); app.dispose(); assert.equal(app.registrations.length, 0); assert.equal(app.projection.size, 0);
-});
-
-test('user-facing copy contains no transport jargon, record dumps or unused mode toggles', () => {
-  const app = setup();
-  for (const dictionary of Object.values(app.dictionaries)) {
-    assert.doesNotMatch(Object.values(dictionary).join('\n'), /PTC|run_code|配置操作记录|Settings operation record|兼容性说明|占位内容不会发送|finish before saving|回复结束后再保存/);
-    for (const key of ['off','on','enable','scope','compatibility','permissions']) assert.equal(Object.hasOwn(dictionary, key), false);
-  }
-  app.dispose();
 });

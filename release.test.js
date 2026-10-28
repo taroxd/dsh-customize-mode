@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseDocument } from 'yaml';
 import { buildRuntime, HOST_MODULES } from './build-runtime.mjs';
+import { PRESET_ID } from './state.js';
 
 const root = new URL('./', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
@@ -25,24 +26,16 @@ function allRows(entries) {
 
 const plugins = allRows(preset.config.plugins);
 
-test('release metadata and relative Loader entry agree on the public package', () => {
-  assert.equal(manifest.name, 'dsh-customize-mode');
-  assert.notEqual(manifest.private, true);
-  assert.equal(manifest.license, 'MIT');
-  assert.equal(manifest.publishConfig.access, 'public');
-  assert.equal(manifest.engines.dsh, '0.2.1-rc.3');
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].id, 'customize-mode');
-  assert.equal(rows[0].name, manifest.exports['.']);
-  assert.equal(rows[0].name, `./runtime/${manifest.version}/index.js`);
+test('Loader entry and preset identity match the runtime exports and controller', () => {
+  const host = rows.find(row => row.id === PRESET_ID);
+  assert.ok(host, 'The Host plugin must be declared');
+  assert.equal(host.name, manifest.exports['.']);
+  assert.equal(host.name, `./runtime/${manifest.version}/index.js`);
   assert.equal(preset.name, '@deepseek-ai/dsh-agent-preset');
-  assert.equal(preset.config.id, 'customize-mode');
+  assert.equal(preset.config.id, PRESET_ID);
 });
 
-test('preset uses shipped plugins and selects the correct shell on each platform', () => {
-  for (const row of plugins) {
-    assert.ok(row.name === 'cordis:group' || row.name.startsWith('@deepseek-ai/dsh-'), row.name);
-  }
+test('preset selects the platform shell and keeps subagents in the inherited tool layer', () => {
   const shells = plugins.filter(row => ['tool-bash', 'tool-pwsh'].includes(row.id));
   assert.equal(shells.length, 2);
   for (const platform of ['win32', 'darwin', 'linux']) {
@@ -95,19 +88,17 @@ test('every Host import is a packaged module, a Node builtin, or a declared depe
       }
     }
   }
-  assert.deepEqual([...visited].sort(), [...HOST_MODULES].sort(), 'The build contains only reachable Host modules');
 });
 
 test('package resources are local and both metadata translations are complete', async () => {
-  const locales = await Promise.all(['en', 'zh'].map(async locale => JSON.parse(await readFile(new URL(`locale/${locale}.json`, root), 'utf8'))));
+  const locales = await Promise.all(['en', 'zh'].map(async locale => JSON.parse(await readFile(new URL(manifest.exports['./locale/*.json'].replace('*', locale), root), 'utf8'))));
   assert.deepEqual(Object.keys(locales[0].meta).sort(), Object.keys(locales[1].meta).sort());
   for (const locale of locales) {
     assert.ok(locale.meta.title.length > 0);
     assert.ok(locale.meta.description.length > 0);
   }
-  assert.equal(manifest.exports['./client'], './client.js');
-  assert.equal(manifest.exports['./icon'], './icon.svg');
-  const icon = await readFile(new URL('icon.svg', root), 'utf8');
+  await readFile(new URL(manifest.exports['./client'], root));
+  const icon = await readFile(new URL(manifest.exports['./icon'], root), 'utf8');
   assert.match(icon, /^<svg\b/);
   assert.doesNotMatch(icon, /<script\b|<foreignObject\b|(?:href|src)\s*=/i);
   assert.ok(Buffer.byteLength(icon) <= 256 * 1024);

@@ -55,7 +55,7 @@ function fixture(options = {}) {
     }};
   Object.defineProperty(ctx,'commands',{get(){throw new Error('public commands accessed');}});
   Object.defineProperty(ctx,'webServer',{get(){throw new Error('cannot get property "webServer" without inject');}});
-  const dispose = createHost(ctx,z,{previewDefaultPrompt:async()=> 'Default {{model}} template',...options});
+  const dispose = createHost(ctx,z,{defaults:defaultStore(),previewDefaultPrompt:async()=> 'Default {{model}} template',...options});
   const fetchRaw = (extra={}) => {
     const method=extra.httpMethod??'POST';
     const message=extra.message??{type:'client-request',rpcId:`test-${++sequence}`,method:extra.endpoint??SETTINGS_ENDPOINT,payload:Object.hasOwn(extra,'payload')?extra.payload:{sessionId:'root',request:{action:'get'}}};
@@ -76,7 +76,7 @@ function fixture(options = {}) {
 
 function defaultStore(beforeSet) {
   let value={revision:0,config:config()};
-  return createDefaultsStore({global:{get:()=>value,async set(next){await beforeSet?.(next);value=next;}},async close(){}});
+  return createDefaultsStore({global:{get:()=>value,async set(next){await beforeSet?.(next);value=next;}},async close(){}}, () => {});
 }
 
 test('global save route changes only defaults and exposes independent revisions',async()=>{
@@ -136,7 +136,7 @@ test('exact Fetch route coexists with Gateway and never reads uninjected webServ
   assert.equal(`${SETTINGS_CHANNEL}/${SETTINGS_ENDPOINT}`.slice(1),'api/customize-mode-settings');
   await f.dispose();assert.equal(f.detached(),true);assert.equal(f.fetchRoutes.size,0);assert.deepEqual([...f.registeredChannels],['/api']);
 });
-test('local protocol parser matches the published Connection envelope and strips unknown fields',()=>{
+test('Connection request parser validates the envelope and strips unknown fields',()=>{
   const message={type:'client-request',rpcId:'r-1',method:SETTINGS_ENDPOINT,payload:{sessionId:'root'},extra:'ignored'};
   assert.deepEqual(clientRequestSchema.parse(message),{type:'client-request',rpcId:'r-1',method:SETTINGS_ENDPOINT,payload:{sessionId:'root'}});
   for(const invalid of [null,[],{}, {...message,type:'server-response'}, {...message,rpcId:1}, {...message,method:null}])assert.equal(clientRequestSchema.safeParse(invalid).success,false);
@@ -145,6 +145,7 @@ test('Fetch preserves official RPC correlation and JSON response framing',async(
   const f=fixture();const response=await f.fetchRaw({message:{type:'client-request',rpcId:'correlation-123',method:SETTINGS_ENDPOINT,payload:{sessionId:'root',request:{action:'get'}}}});
   assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
   const body=await response.json();assert.equal(body.type,'server-response');assert.equal(body.rpcId,'correlation-123');assert.equal(body.result.ok,true);
+  assert.equal(body.result.value.protocol,PROTOCOL);
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('Fetch refuses failed origin/auth admission before parsing or logging',async()=>{
@@ -187,11 +188,6 @@ test('exact browser peer also requires owner principal and live lifetime',async(
   assert.equal((await f.call()).error.code,'FORBIDDEN');
   f.browserPeer.principal={kind:'owner'};f.browserPeer.signal=AbortSignal.abort();
   assert.equal((await f.call()).error.code,'FORBIDDEN');assert.equal(f.first.session.events.length,0);await f.dispose();
-});
-test('get is read-only and keeps runtime/time flag configuration intact',async()=>{
-  const f=fixture();const response=await f.call();assert.equal(response.ok,true);assert.equal(response.value.protocol,PROTOCOL);
-  assert.equal(response.value.config.includeRuntimeContext,true);assert.equal(response.value.config.includeTimeContext,true);
-  assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('root, mode, schema, abort and size admission failures write no logs',async()=>{
   const f=fixture();

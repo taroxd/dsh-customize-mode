@@ -56,8 +56,7 @@ export function initialState() {
 
 export function fold(state, event) {
   const data = event.data;
-  // Pin at the committed boundary, not in an observer that may run after a
-  // reentrant settings write. Saved changes never replace this turn's snapshot.
+  // Pin the active snapshot when a turn starts so mid-turn saves only affect later turns.
   if (event.type === 'turn/start') return { ...state, turn: { number: data.turn, snapshot: state.snapshot } };
   if (event.type === 'turn/end' && state.turn?.number === data.turn) return { ...state, turn: null };
   if (event.type === 'command/run' && data.name === PRESET_ID && data.source?.kind === 'user' && typeof data.commandId === 'string') {
@@ -72,7 +71,7 @@ export function fold(state, event) {
       if (value.protocol === PROTOCOL && value.action === 'set' && Number.isSafeInteger(value.revision) && value.revision === snapshot.revision + 1) {
         snapshot = { protocol: PROTOCOL, revision: value.revision, config: validateConfig(value.config) };
       }
-    } catch { /* Invalid or unrelated command output cannot change settings. */ }
+    } catch {}
   }
   return { ...state, snapshot, pending };
 }

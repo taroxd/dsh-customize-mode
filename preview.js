@@ -1,8 +1,6 @@
 import { PRESET_ID } from './state.js';
 import { SettingsError, assertNotAborted } from './errors.js';
 
-// A preset lease reads the default template without invoking live Agent model
-// or working-directory assembly listeners. Raw interpolation variables remain.
 export function createDefaultPromptPreview(ctx) {
   return async (agent, { signal }) => {
     assertNotAborted(signal);

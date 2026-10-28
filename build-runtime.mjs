@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// A versioned Loader path gives each installed release its own module identity.
 export const HOST_MODULES = [
   'index.js',
   'state.js',

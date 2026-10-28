@@ -13,14 +13,13 @@ export function installPolicy(agent, config, tools, prompt) {
   const dispose = () => { for (const release of disposers.splice(0).reverse()) release(); };
   try {
     if (!config.includeRuntimeContext) {
-      // Shadow the required cwd contribution as optional so the official
-      // suppressor also removes it during final context refresh.
+      // Shadow working-directory:current as optional so suppressRuntimeContext() can remove it.
       own(prompt.context({ name: 'working-directory:current', order: prompt.getContextOrder('WORKING_DIRECTORY'),
         text: '', interpolate: false, required: false }));
       own(prompt.suppressRuntimeContext());
     }
     if (config.overridePrompt) own(prompt.section({
-      name: 'local:customize-mode:complete', order: 0, complete: true, interpolate: false, text: config.prompt,
+      name: 'local:customize-mode:complete', order: 0, complete: true, interpolate: true, text: config.prompt,
     }));
     if (isRestricted(config)) {
       own(tools.presentAs('native'));
@@ -31,7 +30,6 @@ export function installPolicy(agent, config, tools, prompt) {
       if (conflicts.length) throw new SettingsError('UNSUPPORTED_POLICY', { tools: conflicts });
       const localNames = new Set(local.map(tool => tool.name));
       const available = new Set(tools.schemas(agent).map(tool => tool.name));
-      // Saved names may disappear; restrict() only accepts current inherited names.
       own(tools.restrict({ allow: config.allowedTools.filter(name => available.has(name) && !localNames.has(name) && name !== 'run_code') }));
       const leaked = deniedVisible(config, tools.schemas(agent));
       if (leaked.length) throw new SettingsError('TOOL_VISIBILITY_CONFLICT', { tools: leaked });

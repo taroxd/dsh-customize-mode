@@ -1,15 +1,13 @@
-# Independent Agent preset based on the shipped standard composition (DSH 0.2.1-rc.3).
-# Existing presets and the process default are not overridden.
 - insert:
     - id: customize-mode
-      name: './runtime/1.1.1/index.js'
+      name: './runtime/1.1.5/index.js'
       config: {}
     - id: preset-customize-mode
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: customize-mode
         name: 自定义模式
-        description: 自选系统提示词、可用工具和附加信息。
+        description: 自定义系统提示词、可用工具和附加信息。
         order: 10
         plugins:
           - id: persona
@@ -99,8 +97,7 @@
                 config:
                   provider: spawn
                   toolName: subagent
-                  # Keep delegation in the preset's inherited tool layer so even
-                  # subagent can be hidden by the session's empty allowlist.
+                  # Keep subagent in the inherited tool layer so it can be hidden when disabled.
                   modelSelectionSettings: false
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
