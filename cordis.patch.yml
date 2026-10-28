@@ -2,7 +2,7 @@
 # Existing presets and the process default are not overridden.
 - insert:
     - id: customize-mode
-      name: './runtime/1.1.0/index.js'
+      name: './runtime/1.1.1/index.js'
       config: {}
     - id: preset-customize-mode
       name: '@deepseek-ai/dsh-agent-preset'
