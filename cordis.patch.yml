@@ -1,6 +1,6 @@
 - insert:
     - id: customize-mode
-      name: './runtime/1.1.5/index.js'
+      name: './runtime/1.1.6/index.js'
       config: {}
     - id: preset-customize-mode
       name: '@deepseek-ai/dsh-agent-preset'

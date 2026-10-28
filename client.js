@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
         toolsTitle: 'Tools', allTools: 'All available tools', selectedTools: 'Selected tools only',
         newToolsIncluded: 'Newly added tools are enabled automatically.', newToolsExcluded: 'Only checked tools are available. Newly added tools stay off until checked.',
         selectAll: 'Select all', disableAll: 'Disable all', selectedCount: 'Selected',
-        search: 'Search tools', noMatch: 'No matching tools.', noTools: 'All tools disabled. The model will only reply with text.',
+        search: 'Search tools', noMatch: 'No matching tools.',
         save: 'Apply to session', close: 'Close', reload: 'Reload', loading: 'Loading…', saving: 'Applying…',
         saveDefaults: 'Save as default', savingDefaults: 'Saving…',
         defaultsHelp: 'Used as the initial settings for new Custom mode conversations.',
@@ -74,7 +74,7 @@ window.__ModuleLoader__.load({
         toolsTitle: '工具', allTools: '所有可用工具', selectedTools: '仅使用勾选的工具',
         newToolsIncluded: '后续新增的工具也会自动启用。', newToolsExcluded: '仅启用勾选的工具，后续新增的工具默认关闭。',
         selectAll: '全选', disableAll: '全部禁用', selectedCount: '已选',
-        search: '搜索工具', noMatch: '未找到匹配的工具。', noTools: '已禁用所有工具，模型仅进行纯文本对话。',
+        search: '搜索工具', noMatch: '未找到匹配的工具。',
         save: '应用至当前会话', close: '关闭', reload: '重新加载', loading: '加载中…', saving: '应用中…',
         saveDefaults: '存为默认', savingDefaults: '保存中…',
         defaultsHelp: '作为新建自定义模式会话的初始设置。',
@@ -408,8 +408,7 @@ window.__ModuleLoader__.load({
           h('label', {key:tool.name, className:'dshcm-tool', title:tool.description},
             h('input', {type:'checkbox', checked:chosen.has(tool.name), onChange:event => toggle(tool.name, event.target.checked)}),
             h('span', null, h('code', null, tool.name), h('small', null, tool.description)))) :
-          h('p', {className:'dshcm-help'}, t('noMatch'))),
-        config.allowedTools?.length === 0 && h('p', {className:'dshcm-notice'}, t('noTools')));
+          h('p', {className:'dshcm-help'}, t('noMatch'))));
     }
 
     function Icon() {
