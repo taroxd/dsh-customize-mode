@@ -108,7 +108,7 @@ function store(value) {
 }
 const CONFIG = {overridePrompt:false, prompt:'', allowedTools:null, includeRuntimeContext:true, includeTimeContext:true};
 const TOOLS = [{name:'read', description:'Read a file'}, {name:'subagent', description:'Ask another agent'}];
-const response = (overrides = {}) => ({ok:true, value:{protocol:'dsh-customize-mode/v1', revision:0,
+const response = (overrides = {}) => ({ok:true, value:{protocol:'dsh-customize-mode/v1', revision:0, defaultsRevision:0,
   config:{...CONFIG}, defaultPrompt:'Default instructions for {{model}}', tools:TOOLS, warnings:[], ...overrides}});
 
 function setup({locale = 'en', preset = 'customize-mode', rpc, refresh} = {}) {
@@ -215,13 +215,13 @@ test('actual input events preserve empty prompt, all-off tools, independent cont
   assert.equal(inputFor(app, 'Include the current time').props.checked, true);
   change(app, inputFor(app, 'Include the current time'), false);
   click(app, button(app, 'Disable all'));
-  click(app, button(app, 'Save changes'));
+  click(app, button(app, 'Apply to session'));
   await settle(app);
   assert.deepEqual(plain(app.calls[1][2].request), {action:'set', expectedRevision:7,
     config:{...CONFIG, overridePrompt:true, allowedTools:[], includeRuntimeContext:false, includeTimeContext:false}});
-  assert.match(text(app.renderer.tree), /Changes saved\./);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
   assert.equal(app.refreshes, 1);
-  assert.equal(find(app, node => node.type === 'textarea').props.placeholder, 'Default instructions for {{model}}');
+  assert.equal(button(app, 'Custom settings').host.focusCalls, 1);
   app.dispose();
 });
 
@@ -231,7 +231,7 @@ test('typed custom instructions are saved verbatim, without substituting templat
   await open(app);
   change(app, inputFor(app, 'Use a custom system prompt'), true);
   change(app, find(app, node => node.type === 'textarea'), 'Literal {{model}} instructions');
-  click(app, button(app, 'Save changes')); await settle(app);
+  click(app, button(app, 'Apply to session')); await settle(app);
   assert.equal(app.calls[1][2].request.config.prompt, 'Literal {{model}} instructions');
   app.dispose();
 });
@@ -280,13 +280,13 @@ test('reopening does not let an earlier read overwrite the newer response or bus
   second.resolve(response({config:{...CONFIG, prompt:'NEW'}})); await settle(app);
   first.resolve(response({config:{...CONFIG, prompt:'OLD'}})); await settle(app);
   assert.equal(find(app, node => node.type === 'textarea').props.value, 'NEW');
-  assert.equal(button(app, 'Save changes').props.disabled, false);
+  assert.equal(button(app, 'Apply to session').props.disabled, false);
   app.dispose();
 });
 
 test('leaving Custom mode aborts a pending save and late callbacks cannot update an unmounted panel', async () => {
   const save = deferred(); const app = setup({rpc:(_channel, _endpoint, payload) => payload.request.action === 'get' ? Promise.resolve(response()) : save.promise});
-  await open(app); click(app, button(app, 'Save changes'));
+  await open(app); click(app, button(app, 'Apply to session'));
   app.setPreset('standard');
   assert.equal(app.calls[1][3].aborted, true);
   save.resolve(response({revision:1})); await settle(app);
@@ -294,26 +294,158 @@ test('leaving Custom mode aborts a pending save and late callbacks cannot update
   app.dispose();
 });
 
+test('successful save closes immediately without waiting for projection refresh', async () => {
+  const save = deferred(), refresh = deferred();
+  const app = setup({refresh:() => refresh.promise, rpc:(_c, _e, payload) =>
+    payload.request.action === 'get' ? Promise.resolve(response()) : save.promise});
+  await open(app);
+  click(app, button(app, 'Apply to session'));
+  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+  assert.equal(button(app, 'Applying…').props.disabled, true);
+  save.resolve(response({revision:1})); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+  assert.equal(app.calls[1][3].aborted, false, 'do not cancel a completed save');
+  assert.equal(button(app, 'Custom settings').host.focusCalls, 1);
+  assert.equal(app.refreshes, 1);
+  await open(app);
+  refresh.reject(new Error('late refresh failure')); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+  assert.equal(button(app, 'Apply to session').props.disabled, false);
+  app.dispose();
+});
+
+test('failed save keeps the dialog and draft available for retry', async () => {
+  let attempts = 0;
+  const app = setup({rpc:(_c, _e, payload) => {
+    if (payload.request.action === 'get') return Promise.resolve(response());
+    return ++attempts === 1 ? Promise.reject(new Error('network unavailable')) :
+      Promise.resolve(response({revision:1, config:payload.request.config}));
+  }});
+  await open(app);
+  change(app, inputFor(app, 'Use a custom system prompt'), true);
+  change(app, find(app, node => node.type === 'textarea'), 'Keep my draft');
+  click(app, button(app, 'Apply to session')); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+  assert.equal(find(app, node => node.type === 'textarea').props.value, 'Keep my draft');
+  assert.match(text(app.renderer.tree), /Could not reach the app/);
+  assert.equal(button(app, 'Apply to session').props.disabled, false);
+  assert.equal(app.refreshes, 0);
+  click(app, button(app, 'Apply to session')); await settle(app);
+  assert.equal(app.calls[2][2].request.config.prompt, 'Keep my draft');
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+  app.dispose();
+});
+
+for (const locale of ['en', 'zh']) {
+  test(`default action is separated and saves only the global draft in ${locale}`, async () => {
+    const app = setup({locale, rpc:(_c, _e, payload) => {
+      if (payload.request.action === 'get') return Promise.resolve(response({revision:7, defaultsRevision:3}));
+      return Promise.resolve(response({revision:payload.request.action === 'set-defaults' ? 4 : 8, config:payload.request.config}));
+    }});
+    await open(app); app.setRunning(true);
+    const t = app.ctx.locale.bind();
+    const defaults = button(app, t('saveDefaults'));
+    const group = find(app, node => node.props.className === 'dshcm-default-action');
+    assert.ok(nodes(group).some(node => node === defaults));
+    assert.equal(defaults.props['data-primary'], undefined);
+    assert.equal(button(app, t('save')).props['data-primary'], true);
+    assert.ok(defaults.props.title);
+    assert.equal(text(find(app, node => node.props.id === defaults.props['aria-describedby'])), t('defaultsScope'));
+    change(app, inputFor(app, t('override')), true);
+    change(app, find(app, node => node.type === 'textarea'), 'Global draft');
+    click(app, button(app, t('disableAll')));
+    click(app, button(app, t('saveDefaults'))); await settle(app);
+    assert.deepEqual(plain(app.calls[1][2].request), {action:'set-defaults', expectedRevision:3,
+      config:{...CONFIG, overridePrompt:true, prompt:'Global draft', allowedTools:[]}});
+    assert.equal(app.refreshes, 0);
+    assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+    assert.equal(find(app, node => node.type === 'textarea').props.value, 'Global draft');
+    assert.ok(text(app.renderer.tree).includes(t('defaultsSaved')));
+    click(app, button(app, t('save'))); await settle(app);
+    assert.equal(app.calls[2][2].request.action, 'set');
+    assert.equal(app.calls[2][2].request.expectedRevision, 7, 'global revision must not replace the session revision');
+    assert.equal(app.refreshes, 1);
+    assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+    app.dispose();
+  });
+}
+
+test('global revisions advance independently and a stale session does not block saving defaults', async () => {
+  let revision = 20;
+  const app = setup({rpc:(_c, _e, payload) => Promise.resolve(payload.request.action === 'get' ?
+    response({revision:2, defaultsRevision:revision}) : response({revision:++revision, config:payload.request.config}))});
+  await open(app);
+  app.projection.set({revision:9}); app.renderer.flush();
+  assert.equal(button(app, 'Apply to session').props.disabled, true);
+  assert.equal(button(app, 'Save as default').props.disabled, false);
+  click(app, button(app, 'Save as default')); await settle(app);
+  click(app, button(app, 'Save as default')); await settle(app);
+  assert.deepEqual(app.calls.slice(1).map(call => call[2].request.expectedRevision), [20,21]);
+  assert.equal(app.refreshes, 0);
+  assert.equal(button(app, 'Apply to session').props.disabled, true);
+  app.dispose();
+});
+
+test('default save errors retain the draft and use localized diagnostics', async () => {
+  const app = setup({rpc:(_c, _e, payload) => Promise.resolve(payload.request.action === 'get' ? response() :
+    {ok:false, error:{code:'DEFAULTS_REVISION_CONFLICT', message:'PRIVATE_SERVER_TEXT'}})});
+  await open(app);
+  change(app, inputFor(app, 'Use a custom system prompt'), true);
+  change(app, find(app, node => node.type === 'textarea'), 'Keep this draft');
+  click(app, button(app, 'Save as default')); await settle(app);
+  assert.match(text(app.renderer.tree), /global default changed elsewhere/);
+  assert.doesNotMatch(text(app.renderer.tree), /PRIVATE_SERVER_TEXT/);
+  assert.equal(find(app, node => node.type === 'textarea').props.value, 'Keep this draft');
+  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+  app.setLocale('zh'); assert.match(text(app.renderer.tree), /全局默认已在其他位置更改/);
+  app.dispose();
+});
+
+test('in-flight default save blocks both actions and closing ignores its late result', async () => {
+  const save = deferred();
+  const app = setup({rpc:(_c, _e, payload) => payload.request.action === 'get' ? Promise.resolve(response()) : save.promise});
+  await open(app);
+  const defaults = button(app, 'Save as default').props.onClick;
+  const apply = button(app, 'Apply to session').props.onClick;
+  defaults(); defaults(); apply(); app.renderer.flush();
+  assert.equal(app.calls.length, 2);
+  assert.equal(button(app, 'Saving default…').props.disabled, true);
+  assert.equal(button(app, 'Apply to session').props.disabled, true);
+  click(app, button(app, 'Close'));
+  assert.equal(app.calls[1][3].aborted, true);
+  save.resolve(response({revision:1})); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+  assert.equal(app.refreshes, 0);
+  assert.equal(app.renderer.lateUpdates, 0);
+  await open(app);
+  assert.doesNotMatch(text(app.renderer.tree), /Default saved/);
+  app.dispose();
+});
+
 test('double save is blocked synchronously, not only by the next disabled render', async () => {
   const save = deferred(); const app = setup({rpc:(_channel, _endpoint, payload) => payload.request.action === 'get' ? Promise.resolve(response()) : save.promise});
-  await open(app); const onClick = button(app, 'Save changes').props.onClick;
+  await open(app); const onClick = button(app, 'Apply to session').props.onClick;
   onClick(); onClick(); app.renderer.flush(); assert.equal(app.calls.length, 2);
   save.resolve(response({revision:1})); await settle(app); app.dispose();
 });
 
-test('running and newer projected revisions block saves with helpful messages', async () => {
+test('running saves are enabled with next-turn guidance, but stale revisions still block saves', async () => {
   const app = setup(); await open(app);
-  app.setRunning(true); assert.equal(button(app, 'Save changes').props.disabled, true);
-  button(app, 'Save changes').props.onClick(); assert.equal(app.calls.length, 1);
-  app.setRunning(false); app.projection.set({revision:2}); app.renderer.flush();
-  assert.equal(button(app, 'Save changes').props.disabled, true);
+  app.setRunning(true); assert.equal(button(app, 'Apply to session').props.disabled, false);
+  assert.match(text(app.renderer.tree), /apply from the next turn/);
+  click(app, button(app, 'Apply to session')); await settle(app);
+  assert.equal(app.calls.length, 2);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+  await open(app);
+  app.projection.set({revision:2}); app.renderer.flush();
+  assert.equal(button(app, 'Apply to session').props.disabled, true);
   assert.match(text(app.renderer.tree), /changed elsewhere/); app.dispose();
 });
 
 test('a committed save remains successful if projection refresh fails', async () => {
   const app = setup({refresh:() => Promise.reject(new Error('refresh failed')), rpc:(_c, _e, payload) => Promise.resolve(payload.request.action === 'get' ? response() : response({revision:1, config:payload.request.config}))});
-  await open(app); click(app, button(app, 'Save changes')); await settle(app);
-  assert.match(text(app.renderer.tree), /Changes saved\./);
+  await open(app); click(app, button(app, 'Apply to session')); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
   assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alert').length, 0);
   app.dispose();
 });
@@ -336,7 +468,7 @@ for (const locale of ['en', 'zh']) {
 
 test('all published backend error codes have matching English and Chinese messages, unknown codes stay generic', async () => {
   const app = setup({rpc:() => Promise.resolve({ok:false, error:{code:'FUTURE_ERROR', message:'SECRET_RAW_ERROR'}})});
-  const codes = ['FORBIDDEN','UNAUTHORIZED','WRONG_PRESET','SESSION_NOT_FOUND','ROOT_SESSION_REQUIRED','SESSION_CHANGED','HUMAN_ONLY','RUNNING','BUSY','REVISION_CONFLICT','INVALID_REQUEST','RESERVED_TOOL','UNSUPPORTED_POLICY','TOOL_VISIBILITY_CONFLICT','COMMIT_FAILED','PREVIEW_FAILED','ABORTED','UNAVAILABLE','NOT_FOUND','REQUEST_TOO_LARGE','UNSUPPORTED_MEDIA_TYPE','SETTINGS_FAILED'];
+  const codes = ['FORBIDDEN','UNAUTHORIZED','WRONG_PRESET','SESSION_NOT_FOUND','ROOT_SESSION_REQUIRED','SESSION_CHANGED','HUMAN_ONLY','BUSY','REVISION_CONFLICT','DEFAULTS_REVISION_CONFLICT','DEFAULTS_SAVE_FAILED','INVALID_REQUEST','RESERVED_TOOL','UNSUPPORTED_POLICY','TOOL_VISIBILITY_CONFLICT','COMMIT_FAILED','PREVIEW_FAILED','ABORTED','UNAVAILABLE','NOT_FOUND','REQUEST_TOO_LARGE','UNSUPPORTED_MEDIA_TYPE','SETTINGS_FAILED'];
   for (const code of codes) for (const locale of ['en','zh']) assert.equal(typeof app.dictionaries[locale]['error_' + code], 'string');
   assert.deepEqual(Object.keys(app.dictionaries.en).sort(), Object.keys(app.dictionaries.zh).sort());
   await open(app);
@@ -346,7 +478,7 @@ test('all published backend error codes have matching English and Chinese messag
 });
 
 test('get requires its complete catalog, template, warnings and normalized context flags', async () => {
-  for (const field of ['tools', 'defaultPrompt', 'warnings', 'includeRuntimeContext', 'includeTimeContext']) {
+  for (const field of ['tools', 'defaultPrompt', 'defaultsRevision', 'warnings', 'includeRuntimeContext', 'includeTimeContext']) {
     const reply = response();
     if (field.startsWith('include')) delete reply.value.config[field];
     else delete reply.value[field];
@@ -362,13 +494,16 @@ test('get requires its complete catalog, template, warnings and normalized conte
   }
 });
 
-test('set response may omit catalog and template without losing the loaded preview', async () => {
+test('set response may omit catalog and template; reopening fetches a fresh form', async () => {
   const app = setup({rpc:(_channel, _endpoint, payload) => {
     if (payload.request.action === 'get') return Promise.resolve(response());
     return Promise.resolve({ok:true, value:{protocol:'dsh-customize-mode/v1', revision:1, config:payload.request.config, warnings:[]}});
   }});
-  await open(app); click(app, button(app, 'Save changes')); await settle(app);
-  assert.match(text(app.renderer.tree), /Changes saved/);
+  await open(app); click(app, button(app, 'Apply to session')); await settle(app);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, false);
+  await open(app);
+  assert.equal(app.calls.length, 3);
+  assert.equal(app.calls[2][2].request.action, 'get');
   assert.equal(find(app, node => node.type === 'textarea').props.placeholder, 'Default instructions for {{model}}');
   assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'code').length, 2);
   app.dispose();
@@ -378,7 +513,7 @@ test('malformed responses produce a localized protocol error instead of a broken
   const app = setup({rpc:() => Promise.resolve(response({config:{...CONFIG, prompt:42}}))});
   await open(app); assert.match(text(app.renderer.tree), /unexpected response/);
   assert.equal(nodes(app.renderer.tree).filter(node => node.type === 'textarea').length, 0);
-  assert.equal(button(app, 'Save changes').props.disabled, true); app.dispose();
+  assert.equal(button(app, 'Apply to session').props.disabled, true); app.dispose();
 });
 
 test('Escape cancels loading, and every modal label resolves to visible text', () => {
@@ -398,7 +533,7 @@ test('plugin disposal removes both its controls and hidden-record registration',
 test('user-facing copy contains no transport jargon, record dumps or unused mode toggles', () => {
   const app = setup();
   for (const dictionary of Object.values(app.dictionaries)) {
-    assert.doesNotMatch(Object.values(dictionary).join('\n'), /PTC|run_code|配置操作记录|Settings operation record|兼容性说明|占位内容不会发送/);
+    assert.doesNotMatch(Object.values(dictionary).join('\n'), /PTC|run_code|配置操作记录|Settings operation record|兼容性说明|占位内容不会发送|finish before saving|回复结束后再保存/);
     for (const key of ['off','on','enable','scope','compatibility','permissions']) assert.equal(Object.hasOwn(dictionary, key), false);
   }
   app.dispose();

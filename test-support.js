@@ -37,10 +37,16 @@ export function fixture() {
     if (!cells.has(session)) cells.set(session, session.events.reduce(fold, initialState()));
     return cells.get(session);
   };
-  function agent(id, { seed = [], preset = PRESET_ID, root = true, clock = false } = {}) {
+  function agent(id, { seed = [], preset = PRESET_ID, root = true, clock = false, running = false,
+    source = 'startup', isSeeded = seed.length > 0, parentSession, origin, inheritedEventCount = 0 } = {}) {
     const r = registry(), handlers = new Map(), effects = new Set();
-    const a = { id, status: 'idle', preset, registry: r, beforeAppend: undefined, afterAppend: undefined };
+    const a = { id, status: running ? 'running' : 'idle', preset, registry: r,
+      beforeAppend: undefined, afterAppend: undefined, abort: new AbortController(),
+      turn: seed.reduce((last, event) => event.type === 'turn/start' ? event.data.turn : last, 0),
+      cancellations: [], assemblies: [] };
+    a.cancel = (cause, options) => { a.cancellations.push({ cause, options }); if (a.status === 'running') a.abort.abort(cause); };
     a.session = {
+      header: { isSeeded, parentSession, origin }, inheritedEventCount,
       events: [...seed],
       get seq() { return this.events.length; },
       snapshotEvents(from = 0) { return this.events.slice(from); },
@@ -51,6 +57,7 @@ export function fixture() {
         const next = definition.apply(old, event); cells.set(this, next);
         if (old.snapshot !== next.snapshot) for (const fn of changes) fn(this, definition.key);
         a.afterAppend?.(type, data);
+        for (const listener of [...handlers.get('session/event') ?? []]) listener(this, event);
         return event;
       },
     };
@@ -67,14 +74,25 @@ export function fixture() {
       const decision = await next();
       return decision.kind === 'enter' ? { ...decision, messages: [...decision.messages, { source: { kind: 'time-context' }, content: [] }] } : decision;
     }, { prepend: true });
-    a.step = (messages = [], subject = a) => {
+    a.startTurn = (number = a.turn + 1) => {
+      a.status = 'running'; a.turn = number; a.abort = new AbortController();
+      a.session.append('turn/start', { turn: number });
+      a.abort.signal.throwIfAborted();
+    };
+    a.endTurn = ({ idle = true } = {}) => {
+      a.session.append('turn/end', { turn: a.turn, reason: { kind: a.abort.signal.aborted ? 'aborted' : 'completed' } });
+      if (idle) a.status = 'idle';
+    };
+    a.step = async (messages = [], subject = a) => {
+      a.abort.signal.throwIfAborted();
+      a.assemblies.push({ sections: [...r.sections], tools: r.tools.schemas(), runtimeSuppressed: r.suppressors.size > 0 });
       let next = async () => ({ kind: 'enter', messages, startsRequestSeries: true });
       for (const fn of [...handlers.get('agent/pre-step') ?? []].reverse()) { const previous = next; next = () => fn({ agent: subject }, previous); }
       return next();
     };
     a.dispose = () => { for (const dispose of [...effects]) dispose(); live.delete(id); roots.delete(a); emit('agent/disposed', { agent: a }); };
     live.set(id, a); if (root) roots.add(a);
-    if (definition) emit('agent/created', { agent: a });
+    if (definition) emit('agent/created', { agent: a, source });
     return a;
   }
   const ctx = {

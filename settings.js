@@ -1,7 +1,7 @@
 import { createController } from './controller.js';
 import { createDefaultPromptPreview } from './preview.js';
 import { clientRequestSchema } from './protocol.js';
-import { PRESET_ID, MAX_SETTINGS_BYTES, validateSettingsPayload } from './state.js';
+import { PRESET_ID, PROTOCOL, MAX_SETTINGS_BYTES, validateSettingsPayload } from './state.js';
 import { SettingsError, diagnostic, assertNotAborted, waitWithSignal } from './errors.js';
 
 export const SETTINGS_CHANNEL = '/api';
@@ -39,7 +39,8 @@ async function readEnvelope(request, signal, reportCleanupError) {
 }
 
 export function createHost(ctx, z, options = {}) {
-  const controller = createController(ctx, z);
+  const defaults = options.defaults;
+  const controller = createController(ctx, z, defaults);
   const preview = options.previewDefaultPrompt ?? createDefaultPromptPreview(ctx);
   const closing = new AbortController();
   const active = new Set();
@@ -69,6 +70,14 @@ export function createHost(ctx, z, options = {}) {
       if (!agent) throw new SettingsError('SESSION_NOT_FOUND');
       if (operation.action === 'set') return respond(rpcId, { ok: true, value: controller.set(agent, operation, signal) });
       controller.assertAccess(agent, signal);
+      if (operation.action === 'set-defaults') {
+        if (!defaults) throw new SettingsError('UNAVAILABLE');
+        const saved = await defaults.set(operation, () => {
+          if (peer !== ctx.connection.browserPeer || peer.principal.kind !== 'owner') throw new SettingsError('FORBIDDEN');
+          controller.assertAccess(agent, signal);
+        });
+        return respond(rpcId, { ok: true, value: { protocol: PROTOCOL, ...saved, action: 'set-defaults', warnings: [] } });
+      }
       const revision = controller.snapshotOf(agent).revision;
       let defaultPrompt;
       try {
@@ -89,7 +98,7 @@ export function createHost(ctx, z, options = {}) {
       if (ctx.agents.get(sessionId) !== agent || ctx.agentPresets.composedPreset(agent.ctx) !== PRESET_ID) throw new SettingsError('SESSION_CHANGED');
       const value = controller.read(agent, signal);
       if (value.revision !== revision) throw new SettingsError('REVISION_CONFLICT');
-      return respond(rpcId, { ok: true, value: { ...value, defaultPrompt } });
+      return respond(rpcId, { ok: true, value: { ...value, defaultPrompt, defaultsRevision: defaults?.current().revision ?? 0 } });
     } catch (error) {
       if (!(error instanceof SettingsError)) ctx.logger.warn('customize-mode: settings request failed', error);
       const status = error instanceof SettingsError ? (error.code === 'REQUEST_TOO_LARGE' ? 413 : error.httpStatus ?? 200) : 200;

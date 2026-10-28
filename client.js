@@ -20,8 +20,12 @@ window.__ModuleLoader__.load({
         newToolsIncluded: 'New tools are included automatically.', newToolsExcluded: 'Unselected tools cannot be used. New tools stay off until you select them.',
         selectAll: 'Select all', disableAll: 'Disable all', selectedCount: 'Selected',
         search: 'Search tools', noMatch: 'No tools match your search.', noTools: 'No tools selected. The model can only chat.',
-        save: 'Save changes', close: 'Close', reload: 'Reload settings', loading: 'Loading settings…', saving: 'Saving changes…',
-        saved: 'Changes saved.', running: 'Wait for the current reply to finish before saving.',
+        save: 'Apply to session', close: 'Close', reload: 'Reload settings', loading: 'Loading settings…', saving: 'Applying…',
+        saveDefaults: 'Save as default', savingDefaults: 'Saving default…', defaultsScope: 'Global default · New conversations only',
+        defaultsHelp: 'For future Custom mode conversations in every workspace. Existing conversations stay unchanged.',
+        defaultsSaved: 'Default saved. To use these changes in this conversation too, select Apply to session.',
+        sessionHelp: 'Only this conversation. Changes apply from the next turn.',
+        running: 'Changes saved now apply from the next turn. The current reply keeps its existing settings.',
         stale: 'These settings changed elsewhere. Reload them before saving.', notLoaded: 'Settings could not be loaded. Try again.',
         error_GENERIC: 'Something went wrong. Please try again.', error_NETWORK: 'Could not reach the app. Check your connection and try again.',
         error_PROTOCOL: 'The app returned an unexpected response. Reload the page and try again.',
@@ -31,8 +35,10 @@ window.__ModuleLoader__.load({
         error_ROOT_SESSION_REQUIRED: 'Open the main conversation to change these settings.',
         error_SESSION_CHANGED: 'The conversation changed. Close these settings and open them again.',
         error_HUMAN_ONLY: 'Change these settings from the settings panel.',
-        error_RUNNING: 'Wait for the current reply to finish before saving.', error_BUSY: 'Another change is being saved. Try again in a moment.',
+        error_BUSY: 'Another change is being saved. Try again in a moment.',
         error_REVISION_CONFLICT: 'These settings changed elsewhere. Reload them before saving.',
+        error_DEFAULTS_REVISION_CONFLICT: 'The global default changed elsewhere. Reload settings before saving it again.',
+        error_DEFAULTS_SAVE_FAILED: 'The global default could not be saved. Please try again.',
         error_INVALID_REQUEST: 'These settings could not be saved. Reload them and try again.',
         error_RESERVED_TOOL: 'One of the selected tools is unavailable. Reload the tool list.',
         error_UNSUPPORTED_POLICY: 'Some selected tool restrictions cannot be applied. Reload the tool list and try again.',
@@ -60,8 +66,12 @@ window.__ModuleLoader__.load({
         newToolsIncluded: '以后新增的工具也会自动启用。', newToolsExcluded: '未勾选的工具不能使用。新增工具需手动勾选后才能使用。',
         selectAll: '全选', disableAll: '全部禁用', selectedCount: '已选',
         search: '搜索工具', noMatch: '没有找到匹配的工具。', noTools: '未选择工具，模型只能进行对话。',
-        save: '保存更改', close: '关闭', reload: '重新加载', loading: '正在加载设置…', saving: '正在保存更改…',
-        saved: '更改已保存。', running: '请等当前回复结束后再保存。',
+        save: '应用至会话', close: '关闭', reload: '重新加载', loading: '正在加载设置…', saving: '正在应用…',
+        saveDefaults: '保存为默认', savingDefaults: '正在保存默认…', defaultsScope: '全局默认 · 仅用于新会话',
+        defaultsHelp: '用于所有工作区以后新建的自定义模式会话，不改变已有会话。',
+        defaultsSaved: '默认设置已保存。如需当前会话也使用这些更改，请点击“应用至会话”。',
+        sessionHelp: '仅影响当前会话，从下一轮对话起生效。',
+        running: '现在保存的更改将从下一轮对话起生效，当前回复继续使用原设置。',
         stale: '设置已在其他位置更改，请重新加载后再保存。', notLoaded: '未能加载设置，请重试。',
         error_GENERIC: '操作未完成，请重试。', error_NETWORK: '无法连接到应用，请检查连接后重试。',
         error_PROTOCOL: '应用返回了无法识别的结果，请刷新页面后重试。',
@@ -71,8 +81,10 @@ window.__ModuleLoader__.load({
         error_ROOT_SESSION_REQUIRED: '请在主会话中修改这些设置。',
         error_SESSION_CHANGED: '会话已发生变化，请关闭设置后重新打开。',
         error_HUMAN_ONLY: '请通过设置面板修改这些选项。',
-        error_RUNNING: '请等当前回复结束后再保存。', error_BUSY: '另一项更改正在保存，请稍后重试。',
+        error_BUSY: '另一项更改正在保存，请稍后重试。',
         error_REVISION_CONFLICT: '设置已在其他位置更改，请重新加载后再保存。',
+        error_DEFAULTS_REVISION_CONFLICT: '全局默认已在其他位置更改，请重新加载后再保存默认。',
+        error_DEFAULTS_SAVE_FAILED: '全局默认未能保存，请重试。',
         error_INVALID_REQUEST: '无法保存这些设置，请重新加载后再试。',
         error_RESERVED_TOOL: '所选工具中有不可用的项目，请重新加载工具列表。',
         error_UNSUPPORTED_POLICY: '部分工具限制无法应用，请重新加载工具列表后再试。',
@@ -101,13 +113,14 @@ window.__ModuleLoader__.load({
 .dshcm-header h2{margin:0;font-size:18px;font-weight:600}
 .dshcm-body{padding:18px 22px;overflow:auto;min-height:0}
 .dshcm-footer{border-top:1px solid var(--dsw-alias-border-l1);justify-content:flex-end;flex-wrap:wrap}
+.dshcm-default-action{margin-right:auto}
+.dshcm-session-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap}
 .dshcm-section{border:0;padding:0;margin:0 0 22px;min-width:0}
 .dshcm-section:last-child{margin-bottom:0}.dshcm-section legend{font-size:15px;font-weight:600;margin-bottom:10px}
 .dshcm-row{display:flex;gap:9px;align-items:center;margin:8px 0;cursor:pointer}
 .dshcm-help{color:var(--dsw-alias-label-secondary);font-size:12px;margin:8px 0}
 .dshcm-notice{border-radius:8px;padding:9px 12px;background:var(--dsw-alias-bg-layer-2);font-size:12px;margin:10px 0}
 .dshcm-error{color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;overflow-wrap:anywhere}
-.dshcm-success{color:var(--dsw-alias-state-success-primary)}
 .dshcm-dialog input[type=checkbox],.dshcm-dialog input[type=radio]{accent-color:var(--dsw-alias-brand-primary);width:16px;height:16px;flex:none;margin:0}
 .dshcm-dialog textarea,.dshcm-search{box-sizing:border-box;width:100%;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:10px 12px;font:inherit}
 .dshcm-dialog textarea{min-height:150px;max-height:340px;resize:vertical;font-family:ui-monospace,monospace;font-size:13px;line-height:1.6}
@@ -162,6 +175,8 @@ window.__ModuleLoader__.load({
         warnings: data.warnings.map(warning => warning.code)
       };
       if (action === 'get') {
+        if (!Number.isSafeInteger(data.defaultsRevision) || data.defaultsRevision < 0) throw SettingsError('PROTOCOL');
+        settings.defaultsRevision = data.defaultsRevision;
         settings.template = data.defaultPrompt;
         settings.tools = data.tools;
       }
@@ -180,7 +195,7 @@ window.__ModuleLoader__.load({
       const [settings, setSettings] = React.useState(null);
       const [operation, setOperation] = React.useState(null);
       const [failure, setFailure] = React.useState(null);
-      const [saved, setSaved] = React.useState(false);
+      const [defaultsSaved, setDefaultsSaved] = React.useState(false);
       const pending = React.useRef(null);
       const isOpen = React.useRef(false);
 
@@ -200,16 +215,21 @@ window.__ModuleLoader__.load({
         pending.current = controller;
         setOperation(kind);
         setFailure(null);
-        setSaved(false);
+        setDefaultsSaved(false);
         try {
           const next = await requestSettings(ctx, sessionId, request, controller.signal);
           if (pending.current !== controller || !isOpen.current) return;
-          // Set responses need not include a catalog or preview; keep the values from get.
-          setSettings(previous => kind === 'saving' ? {...previous, config: next.config, revision: next.revision, warnings: next.warnings} : next);
           if (kind === 'saving') {
-            setSaved(true);
-            // The write is already committed. A projection refresh failure must not report a failed save.
+            // The write is committed. Close without waiting for the projection refresh.
+            pending.current = null;
+            close();
             Promise.resolve().then(() => ctx.sessions.refreshProjections(sessionId)).catch(() => {});
+          } else if (kind === 'savingDefaults') {
+            // Global defaults do not change this session or replace its unsaved draft.
+            setSettings(previous => ({...previous, defaultsRevision:next.revision}));
+            setDefaultsSaved(true);
+          } else {
+            setSettings(next);
           }
         } catch (error) {
           if (pending.current === controller && isOpen.current) setFailure(errorCode(error));
@@ -237,15 +257,19 @@ window.__ModuleLoader__.load({
       function change(key, value) {
         if (pending.current) return;
         setSettings(previous => previous && ({...previous, config:{...previous.config, [key]:value}}));
-        setSaved(false);
+        setDefaultsSaved(false);
         setFailure(null);
       }
       const stale = !!settings && projection.revision > settings.revision;
-      function save(running) {
-        if (!settings || pending.current || running || stale) return;
+      function save() {
+        if (!settings || pending.current || stale) return;
         void perform('saving', {action:'set', expectedRevision:settings.revision, config:settings.config});
       }
-      return {open, settings, operation, failure, saved, stale, show, close, change, save,
+      function saveDefaults() {
+        if (!settings || pending.current) return;
+        void perform('savingDefaults', {action:'set-defaults', expectedRevision:settings.defaultsRevision, config:settings.config});
+      }
+      return {open, settings, operation, failure, defaultsSaved, stale, show, close, change, save, saveDefaults,
         reload: () => { if (isOpen.current) void perform('loading', {action:'get'}); }};
     }
 
@@ -358,11 +382,16 @@ window.__ModuleLoader__.load({
                 running && h('p', {className:'dshcm-notice', role:'status'}, t('running')),
                 model.stale && h('p', {className:'dshcm-notice', role:'alert'}, t('stale')),
                 model.failure && h('p', {className:'dshcm-error', role:'alert'}, translatedCode(t, 'error', model.failure)),
-                model.saved && h('p', {className:'dshcm-success', role:'status'}, t('saved'))),
+                model.defaultsSaved && h('p', {className:'dshcm-notice', role:'status'}, t('defaultsSaved'))),
               h('footer', {className:'dshcm-footer'},
-                h(Button, {onClick:model.reload, disabled:!!model.operation}, t('reload')),
-                h(Button, {onClick:() => model.save(running), primary:true,
-                  disabled:!model.settings || !!model.operation || running || model.stale}, t(model.operation === 'saving' ? 'saving' : 'save'))))));
+                h('div', {className:'dshcm-default-action'},
+                  h(Button, {onClick:model.saveDefaults, title:t('defaultsHelp'), 'aria-describedby':id + '-defaults-scope',
+                    disabled:!model.settings || !!model.operation}, t(model.operation === 'savingDefaults' ? 'savingDefaults' : 'saveDefaults')),
+                  h('div', {className:'dshcm-help', id:id + '-defaults-scope'}, t('defaultsScope'))),
+                h('div', {className:'dshcm-session-actions'},
+                  h(Button, {onClick:model.reload, disabled:!!model.operation}, t('reload')),
+                  h(Button, {onClick:model.save, primary:true, title:t('sessionHelp'),
+                    disabled:!model.settings || !!model.operation || model.stale}, t(model.operation === 'saving' ? 'saving' : 'save')))))));
       };
     }
 

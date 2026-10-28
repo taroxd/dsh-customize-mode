@@ -16,7 +16,8 @@
 | [index.js](<index.js>) | Host injections and lifecycle entry |
 | [state.js](<state.js>) | Validated configuration, projection, and log replay |
 | [policy.js](<policy.js>) | Scoped prompt, tool, and context registrations |
-| [controller.js](<controller.js>) | Agent lifecycle, read operations, and synchronous settings commits |
+| [controller.js](<controller.js>) | Agent lifecycle, default capture, read operations, and synchronous session commits |
+| [defaults.js](<defaults.js>) | Profile-scoped persistent defaults, serialized writes, and independent revisions |
 | [settings.js](<settings.js>) | Authenticated, bounded Connection Fetch endpoint |
 | [errors.js](<errors.js>) | Stable diagnostic codes and cancellation helpers |
 | [protocol.js](<protocol.js>) | Connection request-envelope schema |
@@ -30,7 +31,10 @@
 - The `customize-mode` preset is the sole activation authority; the settings panel has no separate mode switch.
 - The session log is authoritative. Successful settings updates append paired `command/run` and `command/done` records, advance exactly one revision, and complete without an `await` inside the transaction. A synchronous reentrancy guard protects observer callbacks.
 - Settings records are internal persistence, not chat content. Their keyed renderer must not show raw configuration JSON or let the generic command card appear.
-- Only the exact authenticated browser-owner peer may read or change settings. Recheck root session, preset, running state, cancellation, and revision where asynchronous work or observer callbacks can change them.
+- Only the exact authenticated browser-owner peer may read or change settings. Recheck root session, preset, cancellation, and revision where asynchronous work or observer callbacks can change them.
+- Applying to a session is allowed during a running turn. Persist the latest session settings immediately, but keep the current turn's prompt, tool schemas, execution guard, and context flags pinned together. Apply the latest saved revision before the next turn's assembly, including queued turns without an idle gap; never switch policy at an intermediate model step.
+- Global defaults and session settings are separate operations with independent revisions. Saving a default must not append to or change the current session. Initialize only future, fresh, unseeded root conversations once, copying their creation-time defaults into hidden session settings records; never retrofit existing agents, resumes, forks, clears, or compactions. Non-Custom sessions keep the captured starting settings inert until Custom mode is selected.
+- Defaults are persistent and profile-scoped, not workspace-scoped. The shipped storage root is shared, so namespace the storage domain using the resolved profile identity. Serialize default writes, recheck authorization and CAS inside the queue, and publish memory only after durable success. Drain writes and close the domain on unload.
 - Settings may loosen a tool restriction, so the endpoint stays user-only. Do not add an agent setter tool or public slash command.
 - An empty custom prompt is a real override. Preview text is a placeholder and never becomes the saved value.
 - Preview uses `agentPresets.acquireScope()` and `systemPrompt.assemble()` without a live Agent. Always release the lease, including on failure or cancellation. Unload drains outstanding preview cleanup.
@@ -41,9 +45,11 @@
 
 ## Host and Client integration
 
+Projection state version 2 pins the saved snapshot when folding `turn/start`; its wire view still exposes the latest saved settings. Apply that pin from the scoped `session/event` observer before prompt assembly. Do not use status changes as turn boundaries: queued turns can share one running interval. Session event observers cannot veto a committed append, so policy failures must cancel the turn with `keepInbox: true` before assembly, with the pre-step check as a second fail-closed boundary. Hot-loading the plugin into an already running Custom turn cancels that turn rather than installing new policy halfway through it.
+
 The exact Fetch route coexists with the shared API Gateway interceptor. In the supported DSH release, `connection.rpc.handle()` reads an uninjected provider-side `webServer`; use `connection.fetch.register()` and the published Connection envelope instead. Never import a DSH implementation package through a machine-specific installation path.
 
-The Client keeps one self-registering artifact, requires only host-provided React, and owns its effects through Cordis or React. Gate the control before mounting it; abort obsolete requests on close, unmount, and replacement. Translate stable error codes rather than displaying raw server messages.
+The Client keeps one self-registering artifact, requires only host-provided React, and owns its effects through Cordis or React. Gate the control before mounting it; abort obsolete requests on close, unmount, and replacement. Close immediately after a successful session apply without waiting for projection refresh; keep failed operations open with the draft intact. The separated bottom-left default action stays open after success, preserving the draft and session revision so the user may apply it to the current session afterward. Translate stable error codes rather than displaying raw server messages.
 
 DSH renders custom preset names literally, unlike built-in preset names. Use Chinese for these non-localizable roster fields. The panel and package metadata follow the active locale with English and Chinese translations.
 

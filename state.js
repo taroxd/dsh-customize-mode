@@ -36,10 +36,10 @@ export function validateConfig(value) {
 
 export function validateRequest(request) {
   if (objectWithKeys(request, ['action']) && request.action === 'get') return { action: 'get' };
-  if (!objectWithKeys(request, ['action', 'expectedRevision', 'config']) || request.action !== 'set' ||
+  if (!objectWithKeys(request, ['action', 'expectedRevision', 'config']) || !['set', 'set-defaults'].includes(request.action) ||
       !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0 ||
       request.expectedRevision >= Number.MAX_SAFE_INTEGER) invalid('request');
-  return { action: 'set', expectedRevision: request.expectedRevision, config: validateConfig(request.config) };
+  return { action: request.action, expectedRevision: request.expectedRevision, config: validateConfig(request.config) };
 }
 
 export function validateSettingsPayload(payload) {
@@ -51,11 +51,15 @@ export function validateSettingsPayload(payload) {
 }
 
 export function initialState() {
-  return { snapshot: { protocol: PROTOCOL, revision: 0, config: { ...DEFAULT_CONFIG } }, pending: [] };
+  return { snapshot: { protocol: PROTOCOL, revision: 0, config: { ...DEFAULT_CONFIG } }, pending: [], turn: null };
 }
 
 export function fold(state, event) {
   const data = event.data;
+  // Pin at the committed boundary, not in an observer that may run after a
+  // reentrant settings write. Saved changes never replace this turn's snapshot.
+  if (event.type === 'turn/start') return { ...state, turn: { number: data.turn, snapshot: state.snapshot } };
+  if (event.type === 'turn/end' && state.turn?.number === data.turn) return { ...state, turn: null };
   if (event.type === 'command/run' && data.name === PRESET_ID && data.source?.kind === 'user' && typeof data.commandId === 'string') {
     return state.pending.includes(data.commandId) ? state : { ...state, pending: [...state.pending, data.commandId] };
   }
@@ -70,7 +74,7 @@ export function fold(state, event) {
       }
     } catch { /* Invalid or unrelated command output cannot change settings. */ }
   }
-  return { snapshot, pending };
+  return { ...state, snapshot, pending };
 }
 
 export function projectionDefinition(z) {
@@ -81,8 +85,9 @@ export function projectionDefinition(z) {
   const viewSchema = z.object({ protocol: z.literal(PROTOCOL), revision: z.number().int().nonnegative(), config: configSchema });
   return {
     key: PROJECTION_KEY,
-    stateVersion: 1,
-    stateSchema: z.object({ snapshot: viewSchema, pending: z.array(z.string()) }),
+    stateVersion: 2,
+    stateSchema: z.object({ snapshot: viewSchema, pending: z.array(z.string()),
+      turn: z.object({ number: z.number().int().nonnegative(), snapshot: viewSchema }).nullable() }),
     init: initialState,
     apply: fold,
     wire: { viewSchema, view: state => state.snapshot },

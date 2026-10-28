@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { clientRequestSchema } from './protocol.js';
+import { createDefaultsStore } from './defaults.js';
 import { createHost, SETTINGS_CHANNEL, SETTINGS_ENDPOINT, SETTINGS_PATH } from './settings.js';
 import { DEFAULT_CONFIG, PROTOCOL, PRESET_ID, validateSettingsPayload, fold, initialState } from './state.js';
 const config = extra => ({...DEFAULT_CONFIG,...extra});
@@ -15,18 +16,21 @@ function fixture(options = {}) {
   const stateOf = session => { if(!cells.has(session))cells.set(session,session.events.reduce(fold,initialState())); return cells.get(session); };
   function agent(id, isRoot = true, preset = PRESET_ID) {
     const inherited = ['read','write','subagent'].map(name=>({name,description:name}));
-    const restrictions = new Set(), guards = new Set(), sections = new Set(), contexts = new Set(), effects = new Set();
-    let mode;
+    const restrictions = new Set(), guards = new Set(), sections = new Set(), contexts = new Set(), effects = new Set(), handlers = new Map();
+    let mode, turn = 0;
     const a = {id,status:'idle',preset,session:{events:[],get seq(){return this.events.length;},snapshotEvents(from){return this.events.slice(from);}},beforeAppend:null,afterAppend:null};
     a.session.append = (type,data) => {
       a.beforeAppend?.(type,data);
       const old = stateOf(a.session), event = {type,data,seq:a.session.events.length,time:Date.now()};
       a.session.events.push(event); const next = definition.apply(old,event); cells.set(a.session,next);
       if(old.snapshot!==next.snapshot)for(const fn of changes)fn(a.session,definition.key);
+      for(const fn of [...handlers.get('session/event')??[]])fn(a.session,event);
       a.afterAppend?.(type,data);
       return event;
     };
-    a.ctx = { on:()=>()=>{}, effect(fn){const dispose=fn();effects.add(dispose);return()=>{dispose();effects.delete(dispose);};},
+    a.startTurn=()=>{a.status='running';a.session.append('turn/start',{turn:++turn});};
+    a.cancel=(cause,options)=>{a.cancellation={cause,options};};
+    a.ctx = { on(name,fn){if(!handlers.has(name))handlers.set(name,new Set());handlers.get(name).add(fn);return()=>handlers.get(name).delete(fn);}, effect(fn){const dispose=fn();effects.add(dispose);return()=>{dispose();effects.delete(dispose);};},
       tools:{schemas:()=>inherited.filter(t=>[...restrictions].every(r=>r.allow.includes(t.name))),
         restrict(r){restrictions.add(r);return()=>restrictions.delete(r);},
         presentAs(m){if(mode)throw new Error('mode conflict');mode=m;return()=>{mode=undefined;};},
@@ -69,6 +73,60 @@ function fixture(options = {}) {
   return {ctx,first,child,ordinary,browserPeer,call,fetchRaw,dispose,stateOf,fetchRoutes,registeredChannels,
     detached:()=>detached,setCleanupGate(value){cleanupGate=value;},setInitiator(value){initiator=value;},remove(id){roots.delete(live.get(id));live.delete(id);}};
 }
+
+function defaultStore(beforeSet) {
+  let value={revision:0,config:config()};
+  return createDefaultsStore({global:{get:()=>value,async set(next){await beforeSet?.(next);value=next;}},async close(){}});
+}
+
+test('global save route changes only defaults and exposes independent revisions',async()=>{
+  const defaults=defaultStore(),f=fixture({defaults});
+  assert.equal((await f.call()).value.defaultsRevision,0);
+  f.first.startTurn();
+  const events=f.first.session.events.length;
+  const next=config({overridePrompt:true,prompt:'future sessions',allowedTools:[],includeRuntimeContext:false,includeTimeContext:false});
+  const result=await f.call({action:'set-defaults',expectedRevision:0,config:next});
+  assert.equal(result.ok,true);assert.equal(result.value.revision,1);assert.deepEqual(result.value.config,next);
+  assert.equal(f.first.session.events.length,events);
+  assert.equal(f.stateOf(f.first.session).snapshot.revision,0);
+  assert.equal(f.first.ctx.tools.schemas().length,3);assert.equal(f.first.sections.size,0);
+  const read=await f.call();assert.equal(read.value.defaultsRevision,1);assert.deepEqual(read.value.config,config());
+  assert.equal((await f.call({action:'set-defaults',expectedRevision:0,config:next})).error.code,'DEFAULTS_REVISION_CONFLICT');
+  assert.equal((await f.call({action:'set',expectedRevision:0,config:config({prompt:'current only'})})).ok,true);
+  assert.equal(defaults.current().config.prompt,'future sessions');
+  await f.dispose();await defaults.close();
+});
+
+test('global save has the same exact browser owner and user-only authorization as session apply',async()=>{
+  const defaults=defaultStore(),f=fixture({defaults});
+  const request={action:'set-defaults',expectedRevision:0,config:config()};
+  const stranger={principal:{kind:'owner'},signal:new AbortController().signal};
+  assert.equal((await f.call(request,{peer:stranger})).error.code,'FORBIDDEN');
+  assert.equal((await f.call(request,{sessionId:'child'})).error.code,'ROOT_SESSION_REQUIRED');
+  assert.equal((await f.call(request,{sessionId:'ordinary'})).error.code,'WRONG_PRESET');
+  f.setInitiator(f.first);assert.equal((await f.call(request)).error.code,'HUMAN_ONLY');f.setInitiator(undefined);
+  assert.equal((await f.call(request,{signal:AbortSignal.abort()})).error.code,'ABORTED');
+  assert.equal(defaults.current().revision,0);assert.equal(f.first.session.events.length,0);
+  await f.dispose();await defaults.close();
+});
+
+test('queued global save rechecks session ownership after an earlier durable write',async()=>{
+  let release,started,enqueued;
+  const gate=new Promise(resolve=>{release=resolve;}),began=new Promise(resolve=>{started=resolve;});
+  const secondQueued=new Promise(resolve=>{enqueued=resolve;});
+  const defaults=defaultStore(async()=>{started();await gate;});
+  const originalSet=defaults.set;let calls=0;
+  defaults.set=(...args)=>{const result=originalSet(...args);if(++calls===2)enqueued();return result;};
+  const f=fixture({defaults});
+  const first=f.call({action:'set-defaults',expectedRevision:0,config:config({prompt:'committed'})});
+  await began;
+  const second=f.call({action:'set-defaults',expectedRevision:1,config:config({prompt:'must not commit'})});
+  await secondQueued;f.remove('root');release();
+  assert.equal((await first).ok,true);
+  assert.equal((await second).error.code,'SESSION_NOT_FOUND');
+  assert.equal(defaults.current().revision,1);assert.equal(defaults.current().config.prompt,'committed');
+  await f.dispose();await defaults.close();
+});
 
 test('exact Fetch route coexists with Gateway and never reads uninjected webServer', async()=>{
   const f=fixture();assert.deepEqual([...f.fetchRoutes.keys()],['/api/customize-mode-settings']);
@@ -152,17 +210,44 @@ test('set atomically appends only paired lifecycle records and CAS prevents lost
   assert.equal(one.ok,true);assert.equal(two.error.code,'REVISION_CONFLICT');
   assert.deepEqual(f.first.session.events.map(e=>e.type),['command/run','command/done']);
   assert.equal(f.first.session.events[0].data.name,'customize-mode');assert.equal('args' in f.first.session.events[0].data,false);
-  assert.equal(f.stateOf(f.first.session).snapshot.revision,1);assert.deepEqual(f.first.ctx.tools.schemas(),[]);
+  assert.equal(f.stateOf(f.first.session).snapshot.revision,1);
+  f.first.startTurn();assert.deepEqual(f.first.ctx.tools.schemas(),[]);
   assert.equal(f.stateOf(f.first.session).snapshot.config.includeTimeContext,false);
   assert.equal(f.stateOf(f.first.session).snapshot.config.includeRuntimeContext,false);
   assert.equal([...f.first.sections][0].text,'');
   assert.equal(f.first.session.events.reduce(fold,initialState()).snapshot.revision,1);
   await f.dispose();
 });
-test('running or agent-origin writes are rejected before lifecycle append',async()=>{
+test('running writes persist the next settings without altering the current policy',async()=>{
+  const f=fixture();
+  assert.equal((await f.call({action:'set',expectedRevision:0,config:config({overridePrompt:true,prompt:'current',allowedTools:['read']})})).ok,true);
+  f.first.startTurn();
+  const mask=[...f.first.restrictions][0], section=[...f.first.sections][0];
+  const next=config({overridePrompt:true,prompt:'next',allowedTools:[],includeRuntimeContext:false,includeTimeContext:false});
+  const result=await f.call({action:'set',expectedRevision:1,config:next});
+  assert.equal(result.ok,true);assert.equal(result.value.revision,2);
+  assert.deepEqual(result.value.config,next);
+  assert.equal([...f.first.restrictions][0],mask);assert.equal([...f.first.sections][0],section);
+  assert.deepEqual(f.first.ctx.tools.schemas().map(tool=>tool.name),['read']);
+  assert.equal([...f.first.guards][0]({agent:f.first,name:'read'}),undefined);
+  assert.ok([...f.first.guards][0]({agent:f.first,name:'write'}));
+  const read=await f.call();assert.equal(read.value.revision,2);assert.deepEqual(read.value.config,next);
+  assert.equal([...f.first.sections][0].text,'current');
+  assert.equal((await f.call({action:'set',expectedRevision:1,config:config()})).error.code,'REVISION_CONFLICT');
+  assert.equal(f.first.session.events.reduce(fold,initialState()).snapshot.revision,2);
+  f.first.session.append('turn/end',{turn:1,reason:{kind:'completed'}});
+  f.first.startTurn();
+  assert.deepEqual(f.first.ctx.tools.schemas(),[]);
+  assert.equal([...f.first.sections][0].text,'next');
+  assert.ok([...f.first.guards][0]({agent:f.first,name:'read'}));
+  await f.dispose();
+});
+test('agent-origin writes are rejected both idle and running before lifecycle append',async()=>{
   const f=fixture(), request={action:'set',expectedRevision:0,config:config()};
-  f.first.status='running';assert.equal((await f.call(request)).error.code,'RUNNING');
-  f.first.status='idle';f.setInitiator(f.first);assert.equal((await f.call(request)).error.code,'HUMAN_ONLY');
+  f.setInitiator(f.first);
+  for(const status of ['idle','running']) {
+    f.first.status=status;assert.equal((await f.call(request)).error.code,'HUMAN_ONLY');
+  }
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('failure or cancellation after admission logs failed done but never applies config',async()=>{
@@ -174,7 +259,7 @@ test('failure or cancellation after admission logs failed done but never applies
   assert.equal(f.stateOf(f.first.session).snapshot.revision,0);assert.equal(f.first.ctx.tools.schemas().length,3);
   await f.dispose();
 });
-test('success append failure rolls back staging and settlement permits retry',async()=>{
+test('success append failure preserves settings and settlement permits retry',async()=>{
   const f=fixture();let once=true;
   f.first.beforeAppend=(type,data)=>{if(once&&type==='command/done'&&data.kind==='success'){once=false;throw new Error('disk failure');}};
   const request={action:'set',expectedRevision:0,config:config({allowedTools:[]})};
