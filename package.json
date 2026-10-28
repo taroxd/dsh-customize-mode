@@ -1,0 +1,56 @@
+{
+  "name": "dsh-customize-mode",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Choose the system prompt, tools, and automatic context for each DeepSeek Harness conversation.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24",
+    "dsh": "0.2.1-rc.3"
+  },
+  "packageManager": "pnpm@11.28.5",
+  "exports": {
+    ".": "./runtime/1.0.0/index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "runtime/1.0.0/*.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build-runtime.mjs",
+    "test": "node --test --test-isolation=none *.test.js",
+    "prepack": "node build-runtime.mjs"
+  },
+  "dependencies": {
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "yaml": "2.9.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-session"
+      ]
+    }
+  }
+}
