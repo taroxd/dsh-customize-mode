@@ -55,6 +55,8 @@ Global defaults survive application restarts. Each newly created conversation ca
 
 Turn on **Use a custom system prompt** to use your own text. Leaving the editor empty clears the system prompt. Text is used exactly as entered, so template expressions such as `{{model}}` stay literal in your own prompt.
 
+With the custom prompt switch on, select **Fill with default system prompt** to copy the default template into the editor. If the editor already contains text (including whitespace), a confirmation dialog lets you replace it or cancel and keep your text. Filling changes only the draft; select **Apply to session** or **Save as default** when ready. Copied template expressions remain literal, just like text you type.
+
 To use DSH's built-in system prompt instead, turn the switch off. This does not reset your saved global defaults.
 
 ### Tools

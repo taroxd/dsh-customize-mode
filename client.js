@@ -14,6 +14,9 @@ window.__ModuleLoader__.load({
         promptHelp: 'Your text replaces the default instructions exactly as written.',
         promptEmpty: 'Leave this empty to send no system prompt.',
         promptPlaceholder: 'Write your instructions here…',
+        fillDefaultPrompt: 'Fill with default system prompt', confirmOverwriteTitle: 'Replace custom system prompt?',
+        confirmOverwritePrompt: 'The default system prompt will overwrite your custom system prompt. Confirm overwrite?',
+        confirm: 'Confirm', cancel: 'Cancel',
         contextTitle: 'Extra context', runtimeContext: 'Include environment information', timeContext: 'Include the current time',
         contextHistory: 'Earlier messages stay in the conversation. For a clean start, turn these off before the first message.',
         toolsTitle: 'Tools', allTools: 'All available tools', selectedTools: 'Only selected tools',
@@ -60,6 +63,9 @@ window.__ModuleLoader__.load({
         promptHelp: '用你填写的内容替换默认指令，文字会按原样使用。',
         promptEmpty: '保持为空，即不发送系统提示词。',
         promptPlaceholder: '在这里填写指令…',
+        fillDefaultPrompt: '填入默认系统提示词', confirmOverwriteTitle: '覆盖自定义系统提示词？',
+        confirmOverwritePrompt: '默认系统提示词会覆盖已填写的自定义提示词，是否确认覆盖',
+        confirm: '确定', cancel: '取消',
         contextTitle: '附加信息', runtimeContext: '附加环境信息', timeContext: '附加当前时间',
         contextHistory: '之前的消息仍会保留。需要干净的对话时，请在首次发送前关闭这些选项。',
         toolsTitle: '工具', allTools: '所有可用工具', selectedTools: '仅使用勾选的工具',
@@ -107,6 +113,7 @@ window.__ModuleLoader__.load({
 .dshcm-trigger:hover{background:var(--dsw-alias-bg-layer-2)}
 .dshcm-dialog{box-sizing:border-box;width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 40px);padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:1.5;overflow:hidden}
 .dshcm-dialog::backdrop{background:color-mix(in srgb,var(--dsw-alias-bg-base) 65%,transparent)}
+.dshcm-confirm{width:min(460px,calc(100vw - 32px))}
 .dshcm-layout{display:flex;flex-direction:column;max-height:calc(100dvh - 42px)}
 .dshcm-header,.dshcm-footer{flex:none;padding:16px 22px;display:flex;align-items:center;gap:12px}
 .dshcm-header{border-bottom:1px solid var(--dsw-alias-border-l1);justify-content:space-between}
@@ -281,8 +288,40 @@ window.__ModuleLoader__.load({
       return h('label', {className:'dshcm-row'}, h('input', {type:'checkbox', ...props}), label);
     }
 
+    function PromptOverwriteDialog({t, id, onConfirm, onCancel, trigger}) {
+      const dialog = React.useRef(null);
+      React.useEffect(() => {
+        const element = dialog.current;
+        element.showModal();
+        return () => {
+          if (element.open) element.close();
+          if (trigger.current?.isConnected) trigger.current.focus();
+        };
+      }, []);
+      return h('dialog', {ref:dialog, className:'dshcm-dialog dshcm-confirm', role:'alertdialog',
+        'aria-labelledby':id + '-title', 'aria-describedby':id + '-message',
+        onCancel:event => {event.preventDefault(); event.stopPropagation(); onCancel();},
+        onClose:event => {event.stopPropagation(); onCancel();}, onKeyDown:event => event.stopPropagation()},
+        h('div', {className:'dshcm-layout'},
+          h('header', {className:'dshcm-header'}, h('h2', {id:id + '-title'}, t('confirmOverwriteTitle'))),
+          h('div', {className:'dshcm-body', id:id + '-message'}, t('confirmOverwritePrompt')),
+          h('footer', {className:'dshcm-footer'},
+            h(Button, {onClick:onCancel, autoFocus:true}, t('cancel')),
+            h(Button, {onClick:onConfirm, primary:true}, t('confirm')))));
+    }
+
     function PromptSection({model, t, id}) {
       const {config, template} = model.settings;
+      const [confirming, setConfirming] = React.useState(null);
+      const fillButton = React.useRef(null);
+      // A reload or save invalidates any outstanding confirmation for this draft.
+      React.useEffect(() => { setConfirming(null); }, [model.settings, model.operation]);
+      const canFill = config.overridePrompt && !model.operation;
+      function fill() {
+        if (!canFill) return;
+        if (config.prompt.length > 0) setConfirming(model.settings);
+        else model.change('prompt', template);
+      }
       return h('fieldset', {className:'dshcm-section', disabled:!!model.operation},
         h('legend', null, t('promptTitle')),
         h(Toggle, {label:t('override'), checked:config.overridePrompt, onChange:event => model.change('overridePrompt', event.target.checked)}),
@@ -292,7 +331,16 @@ window.__ModuleLoader__.load({
           value:config.prompt, placeholder:template || t('promptPlaceholder'), disabled:!config.overridePrompt,
           spellCheck:false, onChange:event => model.change('prompt', event.target.value)
         }),
-        config.overridePrompt && h('p', {className:'dshcm-help', id:id + '-empty'}, t('promptEmpty')));
+        h('div', {className:'dshcm-actions'},
+          h('button', {type:'button', className:'dshcm-button', ref:fillButton, disabled:!canFill,
+            'aria-haspopup':'dialog', onClick:fill}, t('fillDefaultPrompt'))),
+        config.overridePrompt && h('p', {className:'dshcm-help', id:id + '-empty'}, t('promptEmpty')),
+        confirming === model.settings && canFill && h(PromptOverwriteDialog, {t, id:id + '-overwrite', trigger:fillButton,
+          onCancel:() => setConfirming(null),
+          onConfirm:() => {
+            if (canFill && confirming === model.settings) model.change('prompt', template);
+            setConfirming(null);
+          }}));
     }
 
     function ContextSection({model, t}) {

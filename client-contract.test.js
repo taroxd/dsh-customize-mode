@@ -193,7 +193,7 @@ test('non-Custom sessions never mount controls or issue settings requests', () =
   app.dispose();
 });
 
-test('actual get request includes its AbortSignal, and template never becomes the input value', async () => {
+test('actual get request includes its AbortSignal and leaves the template as a placeholder', async () => {
   const app = setup(); await open(app);
   assert.deepEqual(plain(app.calls[0].slice(0, 3)), ['/api', 'customize-mode-settings', {sessionId:'session-one', request:{action:'get'}}]);
   assert.ok(app.calls[0][3] instanceof AbortSignal);
@@ -233,6 +233,104 @@ test('typed custom instructions are saved verbatim, without substituting templat
   change(app, find(app, node => node.type === 'textarea'), 'Literal {{model}} instructions');
   click(app, button(app, 'Apply to session')); await settle(app);
   assert.equal(app.calls[1][2].request.config.prompt, 'Literal {{model}} instructions');
+  app.dispose();
+});
+
+for (const locale of ['en', 'zh']) {
+  test(`default prompt fill changes only the empty draft and saves verbatim in ${locale}`, async () => {
+    const template = 'Default {{model}} instructions\nKeep formatting.\n';
+    const app = setup({locale, rpc:(_c, _e, payload) => Promise.resolve(payload.request.action === 'get' ?
+      response({defaultPrompt:template, revision:7, defaultsRevision:3}) : response({revision:8, config:payload.request.config}))});
+    await open(app);
+    const t = app.ctx.locale.bind();
+    assert.equal(button(app, t('fillDefaultPrompt')).props.disabled, true);
+    change(app, inputFor(app, t('override')), true);
+    click(app, button(app, t('fillDefaultPrompt')));
+    assert.equal(find(app, node => node.type === 'textarea').props.value, template);
+    assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
+    assert.equal(app.calls.length, 1, 'filling is not a persistence operation');
+    assert.equal(inputFor(app, t('override')).props.checked, true);
+    click(app, button(app, t('save'))); await settle(app);
+    assert.deepEqual(plain(app.calls[1][2].request), {action:'set', expectedRevision:7,
+      config:{...CONFIG, overridePrompt:true, prompt:template}});
+    app.dispose();
+  });
+
+  test(`nonempty prompt requires explicit confirmation and cancellation preserves it in ${locale}`, async () => {
+    const app = setup({locale}); await open(app);
+    const t = app.ctx.locale.bind();
+    change(app, inputFor(app, t('override')), true);
+    change(app, find(app, node => node.type === 'textarea'), 'My custom draft');
+    const fill = button(app, t('fillDefaultPrompt'));
+    click(app, fill);
+    const dialog = find(app, node => node.props.role === 'alertdialog');
+    assert.equal(dialog.host.open, true);
+    assert.equal(dialog.host.showCalls, 1);
+    assert.equal(text(find(app, node => node.props.id === dialog.props['aria-labelledby'])), t('confirmOverwriteTitle'));
+    assert.equal(text(find(app, node => node.props.id === dialog.props['aria-describedby'])), locale === 'zh' ?
+      '默认系统提示词会覆盖已填写的自定义提示词，是否确认覆盖' : t('confirmOverwritePrompt'));
+    assert.equal(button(app, t('cancel')).props.autoFocus, true);
+    assert.equal(find(app, node => node.type === 'textarea').props.value, 'My custom draft');
+    click(app, button(app, t('cancel')));
+    assert.equal(dialog.host.open, false);
+    assert.equal(fill.host.focusCalls, 1);
+    assert.equal(find(app, node => node.type === 'textarea').props.value, 'My custom draft');
+    click(app, button(app, t('fillDefaultPrompt')));
+    click(app, button(app, t('confirm')));
+    assert.equal(find(app, node => node.type === 'textarea').props.value, response().value.defaultPrompt);
+    assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
+    assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+    assert.equal(app.calls.length, 1);
+    app.dispose();
+  });
+}
+
+test('whitespace is protected and Escape dismisses only the overwrite confirmation', async () => {
+  const app = setup(); await open(app);
+  change(app, inputFor(app, 'Use a custom system prompt'), true);
+  change(app, find(app, node => node.type === 'textarea'), ' \n\t');
+  click(app, button(app, 'Fill with default system prompt'));
+  const dialog = find(app, node => node.props.role === 'alertdialog');
+  let prevented = false, stopped = false;
+  dialog.props.onCancel({preventDefault() {prevented = true;}, stopPropagation() {stopped = true;}});
+  app.renderer.flush();
+  assert.equal(prevented, true); assert.equal(stopped, true);
+  assert.equal(dialog.host.open, false);
+  assert.equal(find(app, node => node.type === 'dialog').host.open, true);
+  assert.equal(find(app, node => node.type === 'textarea').props.value, ' \n\t');
+  assert.equal(app.calls.length, 1);
+  app.dispose();
+});
+
+test('an empty default is copied as empty text, never as the fallback placeholder', async () => {
+  const app = setup({rpc:() => Promise.resolve(response({defaultPrompt:'', config:{...CONFIG, overridePrompt:true, prompt:'My draft'}}))});
+  await open(app);
+  click(app, button(app, 'Fill with default system prompt'));
+  click(app, button(app, 'Confirm'));
+  assert.equal(find(app, node => node.type === 'textarea').props.value, '');
+  assert.equal(inputFor(app, 'Use a custom system prompt').props.checked, true);
+  app.dispose();
+});
+
+test('reload and unmount dispose outstanding overwrite confirmations without changing drafts', async () => {
+  const reload = deferred(); let reads = 0;
+  const app = setup({rpc:() => ++reads === 1 ? Promise.resolve(response({config:{...CONFIG, overridePrompt:true, prompt:'My draft'}})) : reload.promise});
+  await open(app);
+  click(app, button(app, 'Fill with default system prompt'));
+  const dialog = find(app, node => node.props.role === 'alertdialog');
+  click(app, button(app, 'Reload settings'));
+  assert.equal(dialog.host.open, false);
+  assert.equal(button(app, 'Fill with default system prompt').props.disabled, true);
+  click(app, button(app, 'Fill with default system prompt'));
+  assert.equal(find(app, node => node.type === 'textarea').props.value, 'My draft');
+  assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
+  reload.resolve(response({config:{...CONFIG, overridePrompt:true, prompt:'New draft'}})); await settle(app);
+  assert.equal(nodes(app.renderer.tree).filter(node => node.props.role === 'alertdialog').length, 0);
+  click(app, button(app, 'Fill with default system prompt'));
+  const next = find(app, node => node.props.role === 'alertdialog');
+  app.setPreset('standard');
+  assert.equal(next.host.open, false);
+  assert.equal(app.renderer.lateUpdates, 0);
   app.dispose();
 });
 
