@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { DEFAULT_CONFIG, PROTOCOL, PRESET_ID, initialState, fold, validateConfig, validateRequest, permits, projectionDefinition } from './state.js';
 import { installPolicy, filterTimeContext } from './policy.js';
-import { createController } from './controller.js';
+import { createController, openProjection } from './controller.js';
 import { fixture, registry } from './test-support.js';
 
 const config = extra => ({ ...DEFAULT_CONFIG, ...extra });
@@ -15,14 +15,16 @@ const code = expected => error => error.code === expected;
 const cancelled = error => error.kind === 'hook';
 const names = agent => agent.ctx.tools.schemas().map(tool => tool.name);
 const guard = (agent, name) => [...agent.registry.guards][0]({ agent, name });
-function controllerFixture(options = {}) {
-  const f = fixture(), first = f.agent('root', options);
+async function controllerFixture(options = {}) {
+  const { projection, ...rest } = options;
+  const f = fixture({ projection }), first = f.agent('root', rest);
   const defaults = { current: () => ({ revision: 0, config: config() }) };
-  let controller = createController(f.ctx, z, defaults);
+  const build = async () => createController(f.ctx, defaults, await openProjection(f.ctx, z));
+  let controller = await build();
   return { ...f, first, get controller() { return controller; },
     get: (agent = first) => controller.read(agent, signal()),
     set: (revision, cfg, agent = first) => controller.set(agent, request(revision, cfg), signal()),
-    reload() { controller.dispose(); controller = createController(f.ctx, z, defaults); },
+    async reload() { controller.dispose(); controller = await build(); },
     dispose: () => controller.dispose(),
   };
 }
@@ -89,8 +91,8 @@ test('all-tools restriction, empty prompt and runtime suppression dispose indepe
   assert.equal(r.sections.size, 0); assert.equal(r.contexts.size, 0); assert.equal(r.restrictions.size, 0); assert.equal(r.suppressors.size, 0);
 });
 
-test('custom prompt templates delegate interpolation to DSH without rewriting saved settings', () => {
-  const f = controllerFixture(), a = f.first;
+test('custom prompt templates delegate interpolation to DSH without rewriting saved settings', async () => {
+  const f = await controllerFixture(), a = f.first;
   const template = 'Model: {{model}}; provider: {{provider}}; plugin: {{response_language}}.';
   try {
     f.set(0, { overridePrompt: true, prompt: template });
@@ -127,7 +129,7 @@ test('time filtering retains unrelated user content and every decision field', (
 });
 
 test('every step keeps prompt, tools, guard, runtime and time pinned; queued next turn takes latest save', async () => {
-  const f = controllerFixture({ clock: true }), a = f.first;
+  const f = await controllerFixture({ clock: true }), a = f.first;
   f.set(0, { overridePrompt: true, prompt: 'first', allowedTools: ['read'], includeRuntimeContext: false, includeTimeContext: false });
   a.startTurn();
   const section = [...a.registry.sections][0], mask = [...a.registry.restrictions][0], context = [...a.registry.contexts][0];
@@ -156,7 +158,7 @@ test('every step keeps prompt, tools, guard, runtime and time pinned; queued nex
 });
 
 test('saving from an earlier turn-start observer cannot change the new turn pin', async () => {
-  const f = controllerFixture(), a = f.first;
+  const f = await controllerFixture(), a = f.first;
   f.set(0, { overridePrompt: true, prompt: 'boundary', allowedTools: ['read'] });
   a.afterAppend = type => { if (type === 'turn/start') f.set(1, { overridePrompt: true, prompt: 'later', allowedTools: [] }); };
   a.startTurn();
@@ -171,7 +173,7 @@ test('saving from an earlier turn-start observer cannot change the new turn pin'
 });
 
 test('save during an awaited pre-step keeps the effective context flags', async () => {
-  const f = controllerFixture({ clock: true }), a = f.first;
+  const f = await controllerFixture({ clock: true }), a = f.first;
   f.set(0, { includeTimeContext: false }); a.startTurn();
   let release, entered;
   const ready = new Promise(resolve => { entered = resolve; });
@@ -184,7 +186,7 @@ test('save during an awaited pre-step keeps the effective context flags', async 
 });
 
 test('a command observer may start a turn while its settings transaction commits', async () => {
-  const f = controllerFixture(), a = f.first; let step;
+  const f = await controllerFixture(), a = f.first; let step;
   a.afterAppend = type => {
     if (type !== 'command/run') return;
     assert.throws(() => f.set(0, {}), code('BUSY'));
@@ -201,7 +203,7 @@ test('a command observer may start a turn while its settings transaction commits
 });
 
 test('invalid pending runtime policy is saved but cancels the next turn before assembly', async () => {
-  const f = controllerFixture(), a = f.first;
+  const f = await controllerFixture(), a = f.first;
   a.startTurn(); await a.step();
   a.registry.local.set('output', { name: 'output', description: 'Session output' });
   assert.equal(f.set(0, { overridePrompt: true, prompt: 'pending', allowedTools: [] }).revision, 1);
@@ -218,7 +220,7 @@ test('invalid pending runtime policy is saved but cancels the next turn before a
 });
 
 test('late local tools fail closed without switching policy at a middle step', async () => {
-  const f = controllerFixture(), a = f.first;
+  const f = await controllerFixture(), a = f.first;
   f.set(0, { allowedTools: [] }); a.startTurn();
   a.registry.local.set('late', { name: 'late' });
   assert.ok(guard(a, 'late'));
@@ -227,8 +229,8 @@ test('late local tools fail closed without switching policy at a middle step', a
   assert.equal((await a.step()).kind, 'enter'); a.endTurn(); f.dispose();
 });
 
-test('idle reads refresh catalogs and preserve restrictions from other plugins', () => {
-  const f = controllerFixture(), a = f.first;
+test('idle reads refresh catalogs and preserve restrictions from other plugins', async () => {
+  const f = await controllerFixture(), a = f.first;
   const otherMask = a.ctx.tools.restrict({ allow: ['read', 'subagent'] });
   f.set(0, { allowedTools: ['read'] });
   assert.deepEqual(f.get().tools.map(t => [t.name, t.visible]), [['read', true], ['subagent', false]]);
@@ -239,23 +241,31 @@ test('idle reads refresh catalogs and preserve restrictions from other plugins',
   f.dispose();
 });
 
-test('restored settings, forks, preset isolation and unload retain correct ownership', () => {
+test('restored settings, forks, preset isolation and unload retain correct ownership', async () => {
   const saved = config({ overridePrompt: true, prompt: '{{literal}}', allowedTools: [] });
-  const f = controllerFixture({ seed: [run('seed'), done('seed', 1, saved)] }), a = f.first;
+  const f = await controllerFixture({ seed: [run('seed'), done('seed', 1, saved)] }), a = f.first;
   assert.deepEqual(names(a), []);
   const child = f.agent('fork', { seed: a.session.snapshotEvents() });
   assert.deepEqual(names(child), []);
   f.select(a, 'standard'); assert.throws(() => f.get(), code('WRONG_PRESET'));
   assert.equal(a.registry.sections.size, 0);
-  f.select(a, PRESET_ID); f.reload(); assert.deepEqual(names(a), []);
+  f.select(a, PRESET_ID); await f.reload(); assert.deepEqual(names(a), []);
   assert.equal([...a.registry.sections][0].text, '{{literal}}');
   child.dispose(); assert.equal(child.registry.guards.size, 0);
   f.dispose(); assert.equal(a.registry.guards.size, 0); assert.equal(a.registry.sections.size, 0);
 });
 
+test('the retained projection handle replaces the deprecated registry read', async () => {
+  const f = await controllerFixture({ projection: 'handle', seed: [run('seed'), done('seed', 1, config({ prompt: 'from handle' }))] });
+  assert.equal(f.get().config.prompt, 'from handle');
+  assert.equal(f.set(1, { prompt: 'written through the handle' }).revision, 2);
+  assert.equal(f.get().config.prompt, 'written through the handle');
+  f.dispose();
+});
+
 test('hot-loading into an active turn cancels rather than installing midway', async () => {
   const seed = [run('seed'), done('seed', 1, config({ allowedTools: [] })), { type: 'turn/start', data: { turn: 1 } }];
-  const f = controllerFixture({ seed, running: true }), a = f.first;
+  const f = await controllerFixture({ seed, running: true }), a = f.first;
   assert.equal(a.cancellations.length, 1); assert.equal(a.cancellations[0].options.keepInbox, true);
   assert.equal(a.registry.restrictions.size, 0); assert.ok(guard(a, 'read'));
   await assert.rejects(a.step(), cancelled); assert.equal(a.assemblies.length, 0);
@@ -263,11 +273,11 @@ test('hot-loading into an active turn cancels rather than installing midway', as
   await a.step(); a.endTurn(); f.dispose();
 });
 
-test('a turn started reentrantly during idle catalog application aborts before assembly', () => {
-  const f = controllerFixture(), a = f.first, presentAs = a.ctx.tools.presentAs;
+test('a turn started reentrantly during idle catalog application aborts before assembly', async () => {
+  const f = await controllerFixture(), a = f.first, restrict = a.ctx.tools.restrict;
   let once = true;
-  a.ctx.tools.presentAs = mode => {
-    const release = presentAs(mode);
+  a.ctx.tools.restrict = rule => {
+    const release = restrict(rule);
     if (once) {
       once = false;
       assert.throws(() => a.startTurn(), cancelled);
@@ -281,8 +291,8 @@ test('a turn started reentrantly during idle catalog application aborts before a
   a.endTurn(); f.dispose();
 });
 
-test('a competing committed revision from an observer cannot be overwritten', () => {
-  const f = controllerFixture(), a = f.first; let once = true;
+test('a competing committed revision from an observer cannot be overwritten', async () => {
+  const f = await controllerFixture(), a = f.first; let once = true;
   a.afterAppend = type => {
     if (type !== 'command/run' || !once) return;
     once = false;
@@ -295,20 +305,21 @@ test('a competing committed revision from an observer cannot be overwritten', ()
   f.dispose();
 });
 
-test('failed startup unwinds earlier agents, partial guards, subscriptions, and projection', () => {
+test('failed startup unwinds earlier agents, partial guards, subscriptions, and projection', async () => {
   const f = fixture(), first = f.agent('first'), second = f.agent('second');
   const problem = new Error('hook registration failed'); second.ctx.on = () => { throw problem; };
   let subscriptions = 0, projectionDisposed = false;
   const originalOn = f.ctx.on, originalRegister = f.ctx.sessionProjections.register;
   f.ctx.on = (...args) => { const release = originalOn(...args); subscriptions++; return () => { subscriptions--; release(); }; };
   f.ctx.sessionProjections.register = (...args) => { const release = originalRegister(...args); return () => { projectionDisposed = true; release(); }; };
-  assert.throws(() => createController(f.ctx, z, { current: () => ({ revision: 0, config: config() }) }), error => error === problem);
+  const projection = await openProjection(f.ctx, z);
+  assert.throws(() => createController(f.ctx, { current: () => ({ revision: 0, config: config() }) }, projection), error => error === problem);
   assert.equal(first.registry.guards.size, 0); assert.equal(second.registry.guards.size, 0);
   assert.equal(subscriptions, 0); assert.equal(projectionDisposed, true);
 });
 
-test('runtime validation logs original registry exceptions without exposing them in the saved reply', () => {
-  const f = controllerFixture(), a = f.first, problem = new Error('private registry diagnostic'), logs = [];
+test('runtime validation logs original registry exceptions without exposing them in the saved reply', async () => {
+  const f = await controllerFixture(), a = f.first, problem = new Error('private registry diagnostic'), logs = [];
   f.ctx.logger.warn = (...args) => logs.push(args); a.ctx.tools.presentAs = () => { throw problem; };
   assert.equal(f.set(0, { allowedTools: [] }).revision, 1);
   assert.equal(logs.length, 0);
@@ -318,8 +329,8 @@ test('runtime validation logs original registry exceptions without exposing them
   a.endTurn(); f.dispose();
 });
 
-test('a preset change from a commit observer aborts without leaking policy', () => {
-  const f = controllerFixture();
+test('a preset change from a commit observer aborts without leaking policy', async () => {
+  const f = await controllerFixture();
   f.first.afterAppend = type => { if (type === 'command/run') f.select(f.first, 'standard'); };
   assert.throws(() => f.set(0, { allowedTools: [], overridePrompt: true }), code('WRONG_PRESET'));
   assert.equal(f.stateOf(f.first.session).snapshot.revision, 0);

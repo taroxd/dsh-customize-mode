@@ -6,7 +6,7 @@ import { createDefaultsStore } from './defaults.js';
 import { createHost, SETTINGS_CHANNEL, SETTINGS_ENDPOINT, SETTINGS_PATH } from './settings.js';
 import { DEFAULT_CONFIG, PROTOCOL, PRESET_ID, validateSettingsPayload, fold, initialState } from './state.js';
 const config = extra => ({...DEFAULT_CONFIG,...extra});
-function fixture(options = {}) {
+async function fixture(options = {}) {
   const events = new Map(), changes = new Set(), cells = new Map(), live = new Map(), roots = new Set();
   const browserPeer = {principal:{kind:'owner'},signal:new AbortController().signal};
   const registeredChannels = new Set(['/api']); // Existing API Gateway carrier.
@@ -41,7 +41,7 @@ function fixture(options = {}) {
   const first = agent('root'), child = agent('child',false), ordinary = agent('ordinary',true,'standard');
   const ctx = {logger:{warn(){}},on,agents:{get:id=>live.get(id),list:()=>[...live.values()],roots:()=>[...roots],currentInitiator:()=>initiator},
     agentPresets:{composedPreset:context=>[...live.values()].find(a=>a.ctx===context)?.preset},
-    sessionProjections:{register(value){definition=value;return()=>{definition=undefined;cells.clear();};},stateOf,onChanged(fn){changes.add(fn);return()=>changes.delete(fn);}},
+    sessionProjections:{register(value){definition=value;const release=()=>{definition=undefined;cells.clear();};return Object.assign(release,{then:(ok,fail)=>Promise.resolve({stateOf,dispose:async()=>release()}).then(ok,fail)});},stateOf,onChanged(fn){changes.add(fn);return()=>changes.delete(fn);}},
     connection:{browserPeer,
       admit(request){return admissions.get(request)??{rejection:401};},
       rpc:{intercept(){throw new Error('connection: shared RPC channel "/api" already has an interceptor');},
@@ -55,7 +55,7 @@ function fixture(options = {}) {
     }};
   Object.defineProperty(ctx,'commands',{get(){throw new Error('public commands accessed');}});
   Object.defineProperty(ctx,'webServer',{get(){throw new Error('cannot get property "webServer" without inject');}});
-  const dispose = createHost(ctx,z,{defaults:defaultStore(),previewDefaultPrompt:async()=> 'Default {{model}} template',...options});
+  const dispose = await createHost(ctx,z,{defaults:defaultStore(),previewDefaultPrompt:async()=> 'Default {{model}} template',...options});
   const fetchRaw = (extra={}) => {
     const method=extra.httpMethod??'POST';
     const message=extra.message??{type:'client-request',rpcId:`test-${++sequence}`,method:extra.endpoint??SETTINGS_ENDPOINT,payload:Object.hasOwn(extra,'payload')?extra.payload:{sessionId:'root',request:{action:'get'}}};
@@ -80,7 +80,7 @@ function defaultStore(beforeSet) {
 }
 
 test('global save route changes only defaults and exposes independent revisions',async()=>{
-  const defaults=defaultStore(),f=fixture({defaults});
+  const defaults=defaultStore(),f=await fixture({defaults});
   assert.equal((await f.call()).value.defaultsRevision,0);
   f.first.startTurn();
   const events=f.first.session.events.length;
@@ -98,7 +98,7 @@ test('global save route changes only defaults and exposes independent revisions'
 });
 
 test('global save has the same exact browser owner and user-only authorization as session apply',async()=>{
-  const defaults=defaultStore(),f=fixture({defaults});
+  const defaults=defaultStore(),f=await fixture({defaults});
   const request={action:'set-defaults',expectedRevision:0,config:config()};
   const stranger={principal:{kind:'owner'},signal:new AbortController().signal};
   assert.equal((await f.call(request,{peer:stranger})).error.code,'FORBIDDEN');
@@ -117,7 +117,7 @@ test('queued global save rechecks session ownership after an earlier durable wri
   const defaults=defaultStore(async()=>{started();await gate;});
   const originalSet=defaults.set;let calls=0;
   defaults.set=(...args)=>{const result=originalSet(...args);if(++calls===2)enqueued();return result;};
-  const f=fixture({defaults});
+  const f=await fixture({defaults});
   const first=f.call({action:'set-defaults',expectedRevision:0,config:config({prompt:'committed'})});
   await began;
   const second=f.call({action:'set-defaults',expectedRevision:1,config:config({prompt:'must not commit'})});
@@ -129,7 +129,7 @@ test('queued global save rechecks session ownership after an earlier durable wri
 });
 
 test('exact Fetch route coexists with Gateway and never reads uninjected webServer', async()=>{
-  const f=fixture();assert.deepEqual([...f.fetchRoutes.keys()],['/api/customize-mode-settings']);
+  const f=await fixture();assert.deepEqual([...f.fetchRoutes.keys()],['/api/customize-mode-settings']);
   assert.deepEqual([...f.registeredChannels],['/api']);
   assert.equal((await f.call({}, {endpoint:'commands.execute'})).error.code,'INVALID_REQUEST');
   assert.equal(f.first.session.events.length,0);
@@ -142,14 +142,14 @@ test('Connection request parser validates the envelope and strips unknown fields
   for(const invalid of [null,[],{}, {...message,type:'server-response'}, {...message,rpcId:1}, {...message,method:null}])assert.equal(clientRequestSchema.safeParse(invalid).success,false);
 });
 test('Fetch preserves official RPC correlation and JSON response framing',async()=>{
-  const f=fixture();const response=await f.fetchRaw({message:{type:'client-request',rpcId:'correlation-123',method:SETTINGS_ENDPOINT,payload:{sessionId:'root',request:{action:'get'}}}});
+  const f=await fixture();const response=await f.fetchRaw({message:{type:'client-request',rpcId:'correlation-123',method:SETTINGS_ENDPOINT,payload:{sessionId:'root',request:{action:'get'}}}});
   assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
   const body=await response.json();assert.equal(body.type,'server-response');assert.equal(body.rpcId,'correlation-123');assert.equal(body.result.ok,true);
   assert.equal(body.result.value.protocol,PROTOCOL);
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('Fetch refuses failed origin/auth admission before parsing or logging',async()=>{
-  const f=fixture();
+  const f=await fixture();
   for(const status of [401,403]){
     const response=await f.fetchRaw({admission:{rejection:status},body:'not JSON'});
     assert.equal(response.status,status);assert.equal((await response.json()).result.ok,false);
@@ -157,7 +157,7 @@ test('Fetch refuses failed origin/auth admission before parsing or logging',asyn
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('Fetch validates method, path, content type, malformed JSON and envelope method',async()=>{
-  const f=fixture();
+  const f=await fixture();
   assert.equal((await f.fetchRaw({httpMethod:'GET'})).status,404);
   assert.equal((await f.fetchRaw({path:'/api/another-feature'})).status,404);
   assert.equal((await f.fetchRaw({headers:{'content-type':'text/plain'}})).status,415);
@@ -170,13 +170,13 @@ test('Fetch validates method, path, content type, malformed JSON and envelope me
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('Fetch enforces raw request bytes before JSON parsing',async()=>{
-  const f=fixture();
+  const f=await fixture();
   assert.equal((await f.fetchRaw({headers:{'content-length':String(4*1024*1024+32769)}})).status,413);
   assert.equal((await f.fetchRaw({body:' '.repeat(4*1024*1024+32769)})).status,413);
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('only the exact authenticated owner browser peer can read or mutate', async()=>{
-  const f=fixture();
+  const f=await fixture();
   for(const peer of [{principal:{kind:'owner'},signal:new AbortController().signal},{principal:{kind:'agent'},signal:new AbortController().signal},{}]) {
     assert.equal((await f.call({action:'get'},{peer})).error.code,'FORBIDDEN');
     assert.equal((await f.call({action:'set',expectedRevision:0,config:config()},{peer})).error.code,'FORBIDDEN');
@@ -184,13 +184,13 @@ test('only the exact authenticated owner browser peer can read or mutate', async
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('exact browser peer also requires owner principal and live lifetime',async()=>{
-  const f=fixture();f.browserPeer.principal={kind:'agent'};
+  const f=await fixture();f.browserPeer.principal={kind:'agent'};
   assert.equal((await f.call()).error.code,'FORBIDDEN');
   f.browserPeer.principal={kind:'owner'};f.browserPeer.signal=AbortSignal.abort();
   assert.equal((await f.call()).error.code,'FORBIDDEN');assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('root, mode, schema, abort and size admission failures write no logs',async()=>{
-  const f=fixture();
+  const f=await fixture();
   assert.equal((await f.call({action:'get'},{sessionId:'missing'})).error.code,'SESSION_NOT_FOUND');
   assert.equal((await f.call({action:'get'},{sessionId:'child'})).error.code,'ROOT_SESSION_REQUIRED');
   assert.equal((await f.call({action:'get'},{sessionId:'ordinary'})).error.code,'WRONG_PRESET');
@@ -201,7 +201,7 @@ test('root, mode, schema, abort and size admission failures write no logs',async
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('set atomically appends only paired lifecycle records and CAS prevents lost updates',async()=>{
-  const f=fixture();const request={action:'set',expectedRevision:0,config:config({overridePrompt:true,prompt:'',allowedTools:[],includeRuntimeContext:false,includeTimeContext:false})};
+  const f=await fixture();const request={action:'set',expectedRevision:0,config:config({overridePrompt:true,prompt:'',allowedTools:[],includeRuntimeContext:false,includeTimeContext:false})};
   const [one,two]=await Promise.all([f.call(request),f.call(request)]);
   assert.equal(one.ok,true);assert.equal(two.error.code,'REVISION_CONFLICT');
   assert.deepEqual(f.first.session.events.map(e=>e.type),['command/run','command/done']);
@@ -215,7 +215,7 @@ test('set atomically appends only paired lifecycle records and CAS prevents lost
   await f.dispose();
 });
 test('running writes persist the next settings without altering the current policy',async()=>{
-  const f=fixture();
+  const f=await fixture();
   assert.equal((await f.call({action:'set',expectedRevision:0,config:config({overridePrompt:true,prompt:'current',allowedTools:['read']})})).ok,true);
   f.first.startTurn();
   const mask=[...f.first.restrictions][0], section=[...f.first.sections][0];
@@ -239,7 +239,7 @@ test('running writes persist the next settings without altering the current poli
   await f.dispose();
 });
 test('agent-origin writes are rejected both idle and running before lifecycle append',async()=>{
-  const f=fixture(), request={action:'set',expectedRevision:0,config:config()};
+  const f=await fixture(), request={action:'set',expectedRevision:0,config:config()};
   f.setInitiator(f.first);
   for(const status of ['idle','running']) {
     f.first.status=status;assert.equal((await f.call(request)).error.code,'HUMAN_ONLY');
@@ -247,7 +247,7 @@ test('agent-origin writes are rejected both idle and running before lifecycle ap
   assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 test('failure or cancellation after admission logs failed done but never applies config',async()=>{
-  const f=fixture();const request={action:'set',expectedRevision:0,config:config({allowedTools:['run_code']})};
+  const f=await fixture();const request={action:'set',expectedRevision:0,config:config({allowedTools:['run_code']})};
   assert.equal((await f.call(request)).error.code,'RESERVED_TOOL');
   assert.equal(f.first.session.events.length,0);assert.equal(f.stateOf(f.first.session).snapshot.revision,0);
   const abort=new AbortController();f.first.afterAppend=(type)=>{if(type==='command/run')abort.abort();};
@@ -256,7 +256,7 @@ test('failure or cancellation after admission logs failed done but never applies
   await f.dispose();
 });
 test('success append failure preserves settings and settlement permits retry',async()=>{
-  const f=fixture();let once=true;
+  const f=await fixture();let once=true;
   f.first.beforeAppend=(type,data)=>{if(once&&type==='command/done'&&data.kind==='success'){once=false;throw new Error('disk failure');}};
   const request={action:'set',expectedRevision:0,config:config({allowedTools:[]})};
   assert.equal((await f.call(request)).error.code,'COMMIT_FAILED');assert.equal(f.stateOf(f.first.session).snapshot.revision,0);
@@ -264,13 +264,13 @@ test('success append failure preserves settings and settlement permits retry',as
   assert.equal((await f.call(request)).ok,true);await f.dispose();
 });
 test('an observer error after committed success never creates contradictory failure log',async()=>{
-  const f=fixture();f.first.afterAppend=(type,data)=>{if(type==='command/done'&&data.kind==='success')throw new Error('observer failed');};
+  const f=await fixture();f.first.afterAppend=(type,data)=>{if(type==='command/done'&&data.kind==='success')throw new Error('observer failed');};
   const response=await f.call({action:'set',expectedRevision:0,config:config({allowedTools:[]})});
   assert.equal(response.ok,true);assert.equal(response.value.revision,1);assert.equal(f.first.session.events.length,2);await f.dispose();
 });
 test('get preview runs without logs and teardown cancels pending preview before policy disposal',async()=>{
   let started;const began=new Promise(resolve=>{started=resolve;});
-  const f=fixture({previewDefaultPrompt:(_agent,{signal})=>{started();return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true}));}});
+  const f=await fixture({previewDefaultPrompt:(_agent,{signal})=>{started();return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true}));}});
   const read=f.call();await began;
   let release;f.setCleanupGate(new Promise(resolve=>{release=resolve;}));
   const stopping=f.dispose();assert.equal(f.detached(),true);assert.equal(f.first.guards.size,1);
@@ -279,19 +279,19 @@ test('get preview runs without logs and teardown cancels pending preview before 
 });
 test('a settings change during async preview returns a revision conflict',async()=>{
   let release,started;const began=new Promise(resolve=>{started=resolve;});
-  const f=fixture({previewDefaultPrompt:()=>new Promise(resolve=>{release=resolve;started();})});
+  const f=await fixture({previewDefaultPrompt:()=>new Promise(resolve=>{release=resolve;started();})});
   const read=f.call();await began;
   assert.equal((await f.call({action:'set',expectedRevision:0,config:config({prompt:'new'})})).ok,true);
   release('default');assert.equal((await read).error.code,'REVISION_CONFLICT');await f.dispose();
 });
 test('preview callback result is returned as defaultPrompt without altering saved override',async()=>{
-  const f=fixture({previewDefaultPrompt:async()=> 'Default {{model}} prompt'});
+  const f=await fixture({previewDefaultPrompt:async()=> 'Default {{model}} prompt'});
   const read=await f.call();assert.equal(read.value.defaultPrompt,'Default {{model}} prompt');
   assert.equal(read.value.config.overridePrompt,false);assert.equal(f.first.session.events.length,0);await f.dispose();
 });
 
 test('an observer throwing after command/run is settled instead of leaving a pending write', async()=>{
-  const f=fixture();let once=true;
+  const f=await fixture();let once=true;
   f.first.afterAppend=type=>{if(type==='command/run'&&once){once=false;throw new Error('observer failure');}};
   const request={action:'set',expectedRevision:0,config:config({allowedTools:[]})};
   assert.equal((await f.call(request)).error.code,'COMMIT_FAILED');
@@ -302,7 +302,7 @@ test('an observer throwing after command/run is settled instead of leaving a pen
 });
 
 test('the committed record wins over cancellation from a post-commit observer', async()=>{
-  const f=fixture(), abort=new AbortController();
+  const f=await fixture(), abort=new AbortController();
   f.first.afterAppend=(type,data)=>{if(type==='command/done'&&data.kind==='success')abort.abort();};
   const result=await f.call({action:'set',expectedRevision:0,config:config({allowedTools:[]})},{signal:abort.signal});
   assert.equal(result.ok,true);assert.equal(result.value.revision,1);
@@ -312,7 +312,7 @@ test('the committed record wins over cancellation from a post-commit observer', 
 test('teardown drains a cancelled preview finalizer before removing policies', async()=>{
   let started,release;const began=new Promise(resolve=>{started=resolve;});
   const cleanup=new Promise(resolve=>{release=resolve;});
-  const f=fixture({previewDefaultPrompt:async(_agent,{signal})=>{
+  const f=await fixture({previewDefaultPrompt:async(_agent,{signal})=>{
     started();
     try {await new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true}));}
     finally {await cleanup;}
@@ -327,7 +327,7 @@ test('teardown drains a cancelled preview finalizer before removing policies', a
 test('closing or switching a session during preview cannot return stale settings', async()=>{
   for(const mutate of [f=>f.remove('root'),f=>{f.first.preset='standard';}]){
     let started,release;const began=new Promise(resolve=>{started=resolve;});
-    const f=fixture({previewDefaultPrompt:()=>new Promise(resolve=>{started();release=resolve;})});
+    const f=await fixture({previewDefaultPrompt:()=>new Promise(resolve=>{started();release=resolve;})});
     const reading=f.call();await began;mutate(f);release('default');
     assert.equal((await reading).error.code,'SESSION_CHANGED');await f.dispose();
   }
@@ -336,7 +336,7 @@ test('closing or switching a session during preview cannot return stale settings
 test('readback rechecks root ownership and current running state after preview', async()=>{
   for (const loseRoot of [false,true]) {
     let started,release;const began=new Promise(resolve=>{started=resolve;});
-    const f=fixture({previewDefaultPrompt:()=>new Promise(resolve=>{started();release=resolve;})});
+    const f=await fixture({previewDefaultPrompt:()=>new Promise(resolve=>{started();release=resolve;})});
     const reading=f.call();await began;
     if(loseRoot)f.ctx.agents.roots=()=>[];else f.first.status='running';
     release('default');const result=await reading;
@@ -347,7 +347,7 @@ test('readback rechecks root ownership and current running state after preview',
 });
 
 test('body cancellation failure cannot mask abort or stall teardown', async()=>{
-  const f=fixture(), abort=new AbortController();let pulling;
+  const f=await fixture(), abort=new AbortController();let pulling;
   const started=new Promise(resolve=>{pulling=resolve;}), problem=new Error('cancel failed'), logs=[];
   f.ctx.logger.warn=(...args)=>logs.push(args);
   const body=new ReadableStream({pull(){pulling();return new Promise(()=>{});},cancel(){throw problem;}});
@@ -357,7 +357,7 @@ test('body cancellation failure cannot mask abort or stall teardown', async()=>{
 });
 
 test('unexpected preview errors expose a stable diagnostic, not internal exception text', async()=>{
-  const f=fixture({previewDefaultPrompt:async()=>{throw new Error('private internal information');}});
+  const f=await fixture({previewDefaultPrompt:async()=>{throw new Error('private internal information');}});
   const result=await f.call();assert.equal(result.error.code,'PREVIEW_FAILED');
   assert.doesNotMatch(JSON.stringify(result),/private internal information/);
   assert.deepEqual(result.error.details,{});await f.dispose();

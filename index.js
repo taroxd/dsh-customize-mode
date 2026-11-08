@@ -9,7 +9,7 @@ export async function apply(ctx) {
   await ctx.effect(async () => {
     const defaults = await openDefaults(ctx, z);
     try {
-      const closeHost = createHost(ctx, z, { defaults });
+      const closeHost = await createHost(ctx, z, { defaults });
       return async () => {
         try { await closeHost(); }
         finally { await defaults.close(); }

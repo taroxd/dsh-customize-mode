@@ -12,7 +12,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 
 ## Requirements
 
-- DeepSeek Harness `0.2.1-rc.3` (Web or Desktop)
+- DeepSeek Harness `0.2.1-rc.3` or `0.2.2-rc.1` (Web or Desktop)
 - Node.js 24+ and pnpm 11 (for development)
 
 ## Installation

@@ -4,7 +4,8 @@
 
 `dsh-customize-mode` is a DSH Web/Desktop bundle providing a `customize-mode` preset, a settings RPC endpoint, and a bilingual settings UI.
 
-- Target DSH version: `0.2.1-rc.3`; development runtime: Node.js 24+.
+- Target DSH versions: `0.2.1-rc.3` and `0.2.2-rc.1`, declared as `engines.dsh` `>=0.2.1-rc.3 <0.3.0-0`; development runtime: Node.js 24+.
+- Dual-version support is temporary. Every version branch below is a deprecation window for `0.2.1`; delete it, the `engines.dsh` lower bound, and the matching tests once that window closes.
 - Runtime dependency: `zod`. React and host services are provided by DSH.
 - Commands: `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm build`.
 - Keep source code, comments, tests, and documentation in English. Chinese is used in UI translations and localized test cases.
@@ -35,7 +36,20 @@
 - **Global defaults**: Stored per profile using `storageDomain` namespaced by `profileContext.dir`. Defaults are copied once when a fresh root session is created, and do not modify existing, resumed, or forked sessions.
 - **Authorization**: Only the authenticated browser owner peer may read or write settings on root sessions.
 - **Prompts**: Stored as raw templates and registered with `interpolate: true` so DSH resolves variables (`{{model}}`, `{{provider}}`, etc.) at request time. Default prompt preview uses an isolated `agentPresets.acquireScope()` lease.
-- **Tools & context**: Tool restrictions use `tools.presentAs('native')`, `tools.restrict()`, and a `tools.guard()`. Runtime context is suppressed by shadowing `working-directory:current` as optional before calling `suppressRuntimeContext()`. Time context is filtered in `agent/pre-step`.
+- **Tools & context**: Tool restrictions use `tools.restrict()` and a `tools.guard()`; no executor selection is needed because DSH mounts the deployment's native executor in the host scope. Runtime context is suppressed by shadowing `working-directory:current` as optional before calling `suppressRuntimeContext()`. Time context is filtered in `agent/pre-step`.
+
+## Version Compatibility
+
+Each row is the minimum needed to run on both target versions. Remove it with the `0.2.1` window.
+
+| Area | `0.2.1-rc.3` | `0.2.2-rc.1` | Handling |
+| --- | --- | --- | --- |
+| Executor selection | `tools.presentAs('native')` per scope | Removed; `tools.setExecutor()` is owned by the mounted executor plugin | [policy.js](<policy.js>) calls it only when the service still exposes it |
+| Projection registration | `register()` returns the effect disposer | `register()` returns a callable thenable resolving to a retained handle | `openProjection()` in [controller.js](<controller.js>) branches on the thenable |
+| Projection read | `sessionProjections.stateOf(session, key)` | Deprecated; `handle.stateOf(session)` | The same branch picks the reader |
+| Delegation catalog | `list_agents` is its own subpath plugin | Folded into the `@deepseek-ai/dsh-tool-subagent-control` entry | [cordis.patch.yml](<cordis.patch.yml>) disables the extra row when `tools.presentAs` is gone |
+| `tool-subagent` config | `modelSelectionSettings` | Renamed to `modelSelection`, default `false` | Neither row sets it, matching the previous effective value |
+| Client projection refresh | `sessions.refreshProjections()` | Same call, now served by `@deepseek-ai/dsh-api-session-controller` | [client.js](<client.js>) needs no branch |
 
 ## Release Steps
 

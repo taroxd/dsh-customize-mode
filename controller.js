@@ -3,12 +3,30 @@ import { SettingsError, diagnostic, assertNotAborted } from './errors.js';
 import { PRESET_ID, PROJECTION_KEY, PROTOCOL, projectionDefinition, permits, deniedVisible } from './state.js';
 import { installPolicy, filterTimeContext } from './policy.js';
 
-export function createController(ctx, z, defaults) {
+/**
+ * Install the session projection unit and return its synchronous state reader.
+ *
+ * DSH `0.2.2` returns a thenable that resolves to a retained handle carrying
+ * `stateOf(session)`; the registry-level `stateOf(session, key)` read is
+ * deprecated there. DSH `0.2.1` returns the effect disposer and has no handle,
+ * so the registry-level read is its only supported face. Support for the older
+ * shape is removed once the `0.2.1` deprecation window closes.
+ */
+export async function openProjection(ctx, z) {
+  const registration = ctx.sessionProjections.register(projectionDefinition(z));
+  if (typeof registration?.then !== 'function') {
+    return { stateOf: session => ctx.sessionProjections.stateOf(session, PROJECTION_KEY), dispose: () => registration() };
+  }
+  const handle = await registration;
+  return { stateOf: session => handle.stateOf(session), dispose: () => handle.dispose() };
+}
+
+export function createController(ctx, defaults, projection) {
   const agents = new Map();
   const writes = new WeakSet();
   const inMode = agent => ctx.agentPresets.composedPreset(agent.ctx) === PRESET_ID;
   const stateOf = agent => {
-    const state = ctx.sessionProjections.stateOf(agent.session, PROJECTION_KEY);
+    const state = projection.stateOf(agent.session);
     if (!state) throw new SettingsError('UNAVAILABLE');
     return state;
   };
@@ -103,17 +121,16 @@ export function createController(ctx, z, defaults) {
   }
 
   const subscriptions = [];
-  let disposeProjection, disposed = false;
+  let disposed = false;
   function dispose() {
     if (disposed) return;
     disposed = true;
     for (const unsubscribe of subscriptions.reverse()) unsubscribe();
     for (const entry of [...agents.values()]) entry.dispose?.();
     agents.clear();
-    disposeProjection?.();
+    projection.dispose();
   }
   try {
-    disposeProjection = ctx.sessionProjections.register(projectionDefinition(z));
     subscriptions.push(ctx.on('agent/created', ({ agent, source }) => {
       const header = agent.session.header;
       const eligible = () => source === 'startup' && ctx.agents.get(agent.id) === agent &&

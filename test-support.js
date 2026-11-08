@@ -24,7 +24,7 @@ export function registry() {
   return { inherited, local, restrictions, guards, sections, contexts, suppressors, tools, prompt };
 }
 
-export function fixture() {
+export function fixture({ projection = 'disposer' } = {}) {
   const listeners = new Map(), changes = new Set(), cells = new Map(), live = new Map(), roots = new Set();
   let definition, initiator;
   const on = (map, name, fn, options = {}) => {
@@ -37,6 +37,22 @@ export function fixture() {
     if (!cells.has(session)) cells.set(session, session.events.reduce(fold, initialState()));
     return cells.get(session);
   };
+  const release = () => { definition = undefined; cells.clear(); };
+  const sessions = {
+    // DSH 0.2.1: `register` returns the effect disposer and has no handle.
+    register(value) { definition = value; return release; },
+    stateOf,
+    onChanged(fn) { changes.add(fn); return () => changes.delete(fn); },
+  };
+  if (projection === 'handle') {
+    // DSH 0.2.2: `register` returns a callable thenable resolving to a retained handle.
+    sessions.stateOf = () => { throw new Error('the deprecated registry read must not be used'); };
+    sessions.register = value => {
+      definition = value;
+      const handle = { stateOf, async dispose() { release(); } };
+      return Object.assign(release, { then: (ok, fail) => Promise.resolve(handle).then(ok, fail) });
+    };
+  }
   function agent(id, { seed = [], preset = PRESET_ID, root = true, clock = false, running = false,
     source = 'startup', isSeeded = seed.length > 0, parentSession, origin, inheritedEventCount = 0 } = {}) {
     const r = registry(), handlers = new Map(), effects = new Set();
@@ -99,11 +115,7 @@ export function fixture() {
     logger: { warn() {} }, on: (name, fn) => on(listeners, name, fn),
     agents: { get: id => live.get(id), list: () => [...live.values()], roots: () => [...roots], currentInitiator: () => initiator },
     agentPresets: { composedPreset: context => [...live.values()].find(a => a.ctx === context)?.preset },
-    sessionProjections: {
-      register(value) { definition = value; return () => { definition = undefined; cells.clear(); }; },
-      stateOf,
-      onChanged(fn) { changes.add(fn); return () => changes.delete(fn); },
-    },
+    sessionProjections: sessions,
   };
   return {
     ctx, agent, stateOf,

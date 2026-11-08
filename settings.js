@@ -1,4 +1,4 @@
-import { createController } from './controller.js';
+import { createController, openProjection } from './controller.js';
 import { createDefaultPromptPreview } from './preview.js';
 import { clientRequestSchema } from './protocol.js';
 import { PRESET_ID, PROTOCOL, MAX_SETTINGS_BYTES, validateSettingsPayload } from './state.js';
@@ -36,9 +36,16 @@ async function readEnvelope(request, signal, reportCleanupError) {
   }
 }
 
-export function createHost(ctx, z, options) {
+export async function createHost(ctx, z, options) {
   const defaults = options.defaults;
-  const controller = createController(ctx, z, defaults);
+  const projection = await openProjection(ctx, z);
+  let controller;
+  try {
+    controller = createController(ctx, defaults, projection);
+  } catch (error) {
+    projection.dispose();
+    throw error;
+  }
   const preview = options.previewDefaultPrompt ?? createDefaultPromptPreview(ctx);
   const closing = new AbortController();
   const active = new Set();
