@@ -1,25 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SettingsError, diagnostic, assertNotAborted } from './errors.js';
-import { PRESET_ID, PROJECTION_KEY, PROTOCOL, projectionDefinition, permits, deniedVisible } from './state.js';
+import { PRESET_ID, PROTOCOL, projectionDefinition, permits, deniedVisible } from './state.js';
 import { installPolicy, filterTimeContext } from './policy.js';
-
-/**
- * Install the session projection unit and return its synchronous state reader.
- *
- * DSH `0.2.2` returns a thenable that resolves to a retained handle carrying
- * `stateOf(session)`; the registry-level `stateOf(session, key)` read is
- * deprecated there. DSH `0.2.1` returns the effect disposer and has no handle,
- * so the registry-level read is its only supported face. Support for the older
- * shape is removed once the `0.2.1` deprecation window closes.
- */
-export async function openProjection(ctx, z) {
-  const registration = ctx.sessionProjections.register(projectionDefinition(z));
-  if (typeof registration?.then !== 'function') {
-    return { stateOf: session => ctx.sessionProjections.stateOf(session, PROJECTION_KEY), dispose: () => registration() };
-  }
-  const handle = await registration;
-  return { stateOf: session => handle.stateOf(session), dispose: () => handle.dispose() };
-}
 
 export function createController(ctx, defaults, projection) {
   const agents = new Map();
@@ -121,14 +103,14 @@ export function createController(ctx, defaults, projection) {
   }
 
   const subscriptions = [];
-  let disposed = false;
+  let disposed = false, releasing;
   function dispose() {
-    if (disposed) return;
+    if (disposed) return releasing;
     disposed = true;
     for (const unsubscribe of subscriptions.reverse()) unsubscribe();
     for (const entry of [...agents.values()]) entry.dispose?.();
     agents.clear();
-    projection.dispose();
+    return releasing = projection.dispose();
   }
   try {
     subscriptions.push(ctx.on('agent/created', ({ agent, source }) => {

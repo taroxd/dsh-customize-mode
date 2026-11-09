@@ -4,11 +4,10 @@ export function registry() {
   const inherited = new Map(['read', 'write', 'subagent'].map(name => [name, { name, description: name }]));
   const local = new Map(), restrictions = new Set(), guards = new Set(), sections = new Set();
   const contexts = new Map(), suppressors = new Set();
-  let mode;
   const tools = {
-    schemas: () => [...inherited.values()].filter(tool => [...restrictions].every(rule => rule.allow.includes(tool.name)))
-      .concat([...local.values()], mode === 'native' ? [] : [{ name: 'run_code', description: 'transport' }]),
-    presentAs(next) { if (mode) throw new Error('mode conflict'); mode = next; return () => { mode = undefined; }; },
+    schemas: () => [...inherited.values()]
+      .filter(tool => [...restrictions].every(rule => rule.allow.includes(tool.name)))
+      .concat([...local.values()]),
     restrict(rule) {
       if (rule.allow.some(name => !inherited.has(name) || name === 'run_code')) throw new Error('unknown inherited tool');
       restrictions.add(rule); return () => restrictions.delete(rule);
@@ -24,7 +23,7 @@ export function registry() {
   return { inherited, local, restrictions, guards, sections, contexts, suppressors, tools, prompt };
 }
 
-export function fixture({ projection = 'disposer' } = {}) {
+export function fixture() {
   const listeners = new Map(), changes = new Set(), cells = new Map(), live = new Map(), roots = new Set();
   let definition, initiator;
   const on = (map, name, fn, options = {}) => {
@@ -39,20 +38,15 @@ export function fixture({ projection = 'disposer' } = {}) {
   };
   const release = () => { definition = undefined; cells.clear(); };
   const sessions = {
-    // DSH 0.2.1: `register` returns the effect disposer and has no handle.
-    register(value) { definition = value; return release; },
-    stateOf,
-    onChanged(fn) { changes.add(fn); return () => changes.delete(fn); },
-  };
-  if (projection === 'handle') {
-    // DSH 0.2.2: `register` returns a callable thenable resolving to a retained handle.
-    sessions.stateOf = () => { throw new Error('the deprecated registry read must not be used'); };
-    sessions.register = value => {
+    // `register` returns a callable thenable resolving to a retained handle.
+    register(value) {
       definition = value;
       const handle = { stateOf, async dispose() { release(); } };
       return Object.assign(release, { then: (ok, fail) => Promise.resolve(handle).then(ok, fail) });
-    };
-  }
+    },
+    stateOf() { throw new Error('the deprecated registry read must not be used'); },
+    onChanged(fn) { changes.add(fn); return () => changes.delete(fn); },
+  };
   function agent(id, { seed = [], preset = PRESET_ID, root = true, clock = false, running = false,
     source = 'startup', isSeeded = seed.length > 0, parentSession, origin, inheritedEventCount = 0 } = {}) {
     const r = registry(), handlers = new Map(), effects = new Set();

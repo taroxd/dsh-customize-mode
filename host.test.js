@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { DEFAULT_CONFIG, PROTOCOL, PRESET_ID, initialState, fold, validateConfig, validateRequest, permits, projectionDefinition } from './state.js';
 import { installPolicy, filterTimeContext } from './policy.js';
-import { createController, openProjection } from './controller.js';
+import { createController } from './controller.js';
 import { fixture, registry } from './test-support.js';
 
 const config = extra => ({ ...DEFAULT_CONFIG, ...extra });
@@ -16,15 +16,14 @@ const cancelled = error => error.kind === 'hook';
 const names = agent => agent.ctx.tools.schemas().map(tool => tool.name);
 const guard = (agent, name) => [...agent.registry.guards][0]({ agent, name });
 async function controllerFixture(options = {}) {
-  const { projection, ...rest } = options;
-  const f = fixture({ projection }), first = f.agent('root', rest);
+  const f = fixture(), first = f.agent('root', options);
   const defaults = { current: () => ({ revision: 0, config: config() }) };
-  const build = async () => createController(f.ctx, defaults, await openProjection(f.ctx, z));
+  const build = async () => createController(f.ctx, defaults, await f.ctx.sessionProjections.register(projectionDefinition(z)));
   let controller = await build();
   return { ...f, first, get controller() { return controller; },
     get: (agent = first) => controller.read(agent, signal()),
     set: (revision, cfg, agent = first) => controller.set(agent, request(revision, cfg), signal()),
-    async reload() { controller.dispose(); controller = await build(); },
+    async reload() { await controller.dispose(); controller = await build(); },
     dispose: () => controller.dispose(),
   };
 }
@@ -311,8 +310,14 @@ test('failed startup unwinds earlier agents, partial guards, subscriptions, and 
   let subscriptions = 0, projectionDisposed = false;
   const originalOn = f.ctx.on, originalRegister = f.ctx.sessionProjections.register;
   f.ctx.on = (...args) => { const release = originalOn(...args); subscriptions++; return () => { subscriptions--; release(); }; };
-  f.ctx.sessionProjections.register = (...args) => { const release = originalRegister(...args); return () => { projectionDisposed = true; release(); }; };
-  const projection = await openProjection(f.ctx, z);
+  f.ctx.sessionProjections.register = (...args) => {
+    const release = originalRegister(...args);
+    return { then: (ok, fail) => release.then(handle => ok({
+      stateOf: handle.stateOf,
+      async dispose() { projectionDisposed = true; await handle.dispose(); },
+    }), fail) };
+  };
+  const projection = await f.ctx.sessionProjections.register(projectionDefinition(z));
   assert.throws(() => createController(f.ctx, { current: () => ({ revision: 0, config: config() }) }, projection), error => error === problem);
   assert.equal(first.registry.guards.size, 0); assert.equal(second.registry.guards.size, 0);
   assert.equal(subscriptions, 0); assert.equal(projectionDisposed, true);
@@ -320,7 +325,7 @@ test('failed startup unwinds earlier agents, partial guards, subscriptions, and 
 
 test('runtime validation logs original registry exceptions without exposing them in the saved reply', async () => {
   const f = await controllerFixture(), a = f.first, problem = new Error('private registry diagnostic'), logs = [];
-  f.ctx.logger.warn = (...args) => logs.push(args); a.ctx.tools.presentAs = () => { throw problem; };
+  f.ctx.logger.warn = (...args) => logs.push(args); a.ctx.tools.restrict = () => { throw problem; };
   assert.equal(f.set(0, { allowedTools: [] }).revision, 1);
   assert.equal(logs.length, 0);
   assert.throws(() => a.startTurn(), cancelled);

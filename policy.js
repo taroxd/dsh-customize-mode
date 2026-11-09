@@ -22,9 +22,6 @@ export function installPolicy(agent, config, tools, prompt) {
       name: 'local:customize-mode:complete', order: 0, complete: true, interpolate: true, text: config.prompt,
     }));
     if (isRestricted(config)) {
-      // DSH 0.2.1 selects the native presentation per scope; 0.2.2 moved executor
-      // selection to the mounted executor plugin and removed this call.
-      if (typeof tools.presentAs === 'function') own(tools.presentAs('native'));
       const probe = tools.restrict({ allow: [] });
       let local;
       try { local = tools.schemas(agent); } finally { probe(); }

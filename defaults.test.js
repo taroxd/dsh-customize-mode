@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { createDefaultsStore, openDefaults } from './defaults.js';
-import { createController, openProjection } from './controller.js';
-import { DEFAULT_CONFIG, PRESET_ID, validateRequest } from './state.js';
+import { createController } from './controller.js';
+import { DEFAULT_CONFIG, PRESET_ID, projectionDefinition, validateRequest } from './state.js';
 import { fixture } from './test-support.js';
 
 const config = extra => ({ ...DEFAULT_CONFIG, ...extra });
@@ -117,7 +117,7 @@ test('default requests validate action, complete config, reserved tools, and saf
 test('only future fresh roots capture defaults once, including before Custom preset selection', async () => {
   const f = fixture(), existing = f.agent('existing'), storage = await storeFixture();
   await storage.store.set(request(0, { overridePrompt: true, prompt: 'first default', allowedTools: [] }), allow);
-  const controller = createController(f.ctx, storage.store, await openProjection(f.ctx, z));
+  const controller = createController(f.ctx, storage.store, await f.ctx.sessionProjections.register(projectionDefinition(z)));
   const custom = f.agent('workspace-one');
   const blank = f.agent('workspace-two', { preset: 'standard' });
   assert.equal(controller.snapshotOf(existing).revision, 0);
@@ -141,7 +141,7 @@ test('only future fresh roots capture defaults once, including before Custom pre
 
 test('resumes, seeded forks, child roots, clears and compactions never take newer global defaults', async () => {
   const f = fixture(), storage = await storeFixture();
-  const controller = createController(f.ctx, storage.store, await openProjection(f.ctx, z));
+  const controller = createController(f.ctx, storage.store, await f.ctx.sessionProjections.register(projectionDefinition(z)));
   const original = f.agent('original');
   const seed = original.session.snapshotEvents();
   await storage.store.set(request(0, { prompt: 'must not inherit' }), allow);

@@ -42,21 +42,13 @@ test('preset selects the platform shell and keeps subagents in the inherited too
     const active = shells.filter(row => !vm.runInNewContext(row.disabled.expression, { process: { platform } }));
     assert.deepEqual(active.map(row => row.id), [platform === 'win32' ? 'tool-pwsh' : 'tool-bash']);
   }
-  assert.equal(plugins.find(row => row.id === 'tool-subagent').config.modelSelectionSettings, undefined);
+  assert.equal(plugins.find(row => row.id === 'tool-subagent').config.modelSelection, false);
   for (const id of ['tool-subagent', 'tool-subagent-fork']) {
     const config = plugins.find(row => row.id === id).config;
     assert.equal(config.agentPreset, undefined);
     assert.equal(config.allowedAgentPresets, undefined);
   }
-});
-
-test('list_agents mounts only on the DSH version that keeps it out of the control entry', () => {
-  const row = plugins.find(row => row.id === 'tool-subagent-list-agents');
-  assert.equal(row.name, '@deepseek-ai/dsh-tool-subagent-control/list-agents');
-  const enabled = tools => vm.runInNewContext(row.disabled.expression, { ctx: { get: name => name === 'tools' ? tools : undefined } });
-  assert.equal(enabled({ presentAs() {} }), false, 'DSH 0.2.1 needs the separate subpath row');
-  assert.equal(enabled({}), true, 'DSH 0.2.2 owns list_agents in the control entry');
-  assert.equal(enabled(undefined), true, 'a missing tools service keeps the row inert instead of mounting a dead subpath');
+  assert.equal(plugins.some(row => row.id === 'tool-subagent-list-agents'), false, 'list_agents is owned by the control entry');
 });
 
 test('runtime build is reproducible and works from a directory with spaces', async t => {

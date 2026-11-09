@@ -1,21 +1,21 @@
 {
   "name": "dsh-customize-mode",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "type": "module",
   "description": "Customize the system prompt, enabled tools, and extra context for each DeepSeek Harness conversation.",
   "license": "MIT",
   "packageManager": "pnpm@11.28.5",
   "engines": {
-    "dsh": ">=0.2.1-rc.3 <0.3.0-0"
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
   },
   "exports": {
-    ".": "./runtime/1.1.7/index.js",
+    ".": "./runtime/1.1.8/index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
-    "runtime/1.1.7/*.js",
+    "runtime/1.1.8/*.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

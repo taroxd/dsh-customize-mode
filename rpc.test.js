@@ -17,7 +17,7 @@ async function fixture(options = {}) {
   function agent(id, isRoot = true, preset = PRESET_ID) {
     const inherited = ['read','write','subagent'].map(name=>({name,description:name}));
     const restrictions = new Set(), guards = new Set(), sections = new Set(), contexts = new Set(), effects = new Set(), handlers = new Map();
-    let mode, turn = 0;
+    let turn = 0;
     const a = {id,status:'idle',preset,session:{events:[],get seq(){return this.events.length;},snapshotEvents(from){return this.events.slice(from);}},beforeAppend:null,afterAppend:null};
     a.session.append = (type,data) => {
       a.beforeAppend?.(type,data);
@@ -33,7 +33,6 @@ async function fixture(options = {}) {
     a.ctx = { on(name,fn){if(!handlers.has(name))handlers.set(name,new Set());handlers.get(name).add(fn);return()=>handlers.get(name).delete(fn);}, effect(fn){const dispose=fn();effects.add(dispose);return()=>{dispose();effects.delete(dispose);};},
       tools:{schemas:()=>inherited.filter(t=>[...restrictions].every(r=>r.allow.includes(t.name))),
         restrict(r){restrictions.add(r);return()=>restrictions.delete(r);},
-        presentAs(m){if(mode)throw new Error('mode conflict');mode=m;return()=>{mode=undefined;};},
         guard(fn){guards.add(fn);return()=>guards.delete(fn);}},
       systemPrompt:{section(s){sections.add(s);return()=>sections.delete(s);},context(c){contexts.add(c);return()=>contexts.delete(c);},getContextOrder:()=>100,suppressRuntimeContext:()=>()=>{}}};
     Object.assign(a,{restrictions,guards,sections,contexts}); live.set(id,a); if(isRoot)roots.add(a); return a;
@@ -41,7 +40,7 @@ async function fixture(options = {}) {
   const first = agent('root'), child = agent('child',false), ordinary = agent('ordinary',true,'standard');
   const ctx = {logger:{warn(){}},on,agents:{get:id=>live.get(id),list:()=>[...live.values()],roots:()=>[...roots],currentInitiator:()=>initiator},
     agentPresets:{composedPreset:context=>[...live.values()].find(a=>a.ctx===context)?.preset},
-    sessionProjections:{register(value){definition=value;const release=()=>{definition=undefined;cells.clear();};return Object.assign(release,{then:(ok,fail)=>Promise.resolve({stateOf,dispose:async()=>release()}).then(ok,fail)});},stateOf,onChanged(fn){changes.add(fn);return()=>changes.delete(fn);}},
+    sessionProjections:{register(value){definition=value;const release=()=>{definition=undefined;cells.clear();};return Object.assign(release,{then:(ok,fail)=>Promise.resolve({stateOf,dispose:async()=>release()}).then(ok,fail)});},onChanged(fn){changes.add(fn);return()=>changes.delete(fn);}},
     connection:{browserPeer,
       admit(request){return admissions.get(request)??{rejection:401};},
       rpc:{intercept(){throw new Error('connection: shared RPC channel "/api" already has an interceptor');},

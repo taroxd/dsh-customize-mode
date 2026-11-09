@@ -4,8 +4,7 @@
 
 `dsh-customize-mode` is a DSH Web/Desktop bundle providing a `customize-mode` preset, a settings RPC endpoint, and a bilingual settings UI.
 
-- Target DSH versions: `0.2.1-rc.3` and `0.2.2-rc.1`, declared as `engines.dsh` `>=0.2.1-rc.3 <0.3.0-0`; development runtime: Node.js 24+.
-- Dual-version support is temporary. Every version branch below is a deprecation window for `0.2.1`; delete it, the `engines.dsh` lower bound, and the matching tests once that window closes.
+- Target DSH version: `0.2.2-rc.1`, declared as `engines.dsh` `>=0.2.2-rc.1 <0.3.0-0`; development runtime: Node.js 24+.
 - Runtime dependency: `zod`. React and host services are provided by DSH.
 - Commands: `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm build`.
 - Keep source code, comments, tests, and documentation in English. Chinese is used in UI translations and localized test cases.
@@ -40,16 +39,7 @@
 
 ## Version Compatibility
 
-Each row is the minimum needed to run on both target versions. Remove it with the `0.2.1` window.
-
-| Area | `0.2.1-rc.3` | `0.2.2-rc.1` | Handling |
-| --- | --- | --- | --- |
-| Executor selection | `tools.presentAs('native')` per scope | Removed; `tools.setExecutor()` is owned by the mounted executor plugin | [policy.js](<policy.js>) calls it only when the service still exposes it |
-| Projection registration | `register()` returns the effect disposer | `register()` returns a callable thenable resolving to a retained handle | `openProjection()` in [controller.js](<controller.js>) branches on the thenable |
-| Projection read | `sessionProjections.stateOf(session, key)` | Deprecated; `handle.stateOf(session)` | The same branch picks the reader |
-| Delegation catalog | `list_agents` is its own subpath plugin | Folded into the `@deepseek-ai/dsh-tool-subagent-control` entry | [cordis.patch.yml](<cordis.patch.yml>) disables the extra row when `tools.presentAs` is gone |
-| `tool-subagent` config | `modelSelectionSettings` | Renamed to `modelSelection`, default `false` | Neither row sets it, matching the previous effective value |
-| Client projection refresh | `sessions.refreshProjections()` | Same call, now served by `@deepseek-ai/dsh-api-session-controller` | [client.js](<client.js>) needs no branch |
+The plugin requires DSH `0.2.2-rc.1` or newer. It reads the session projection through the retained registration handle and relies on the deployment's mounted native tool executor. Do not reintroduce per-scope executor selection (`tools.presentAs`), the registry-level `sessionProjections.stateOf(session, key)` read, or a separate `@deepseek-ai/dsh-tool-subagent-control/list-agents` row: DSH `0.2.2` removed the first two and folded the third into the control entry.
 
 ## Release Steps
 

@@ -1,6 +1,6 @@
 - insert:
     - id: customize-mode
-      name: './runtime/1.1.7/index.js'
+      name: './runtime/1.1.8/index.js'
       config: {}
     - id: preset-customize-mode
       name: '@deepseek-ai/dsh-agent-preset'
@@ -90,21 +90,13 @@
             config:
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-                # DSH 0.2.2 folded `list_agents` into the control plugin's entry and dropped
-                # this subpath. The same release removed `tools.presentAs`, so that marker
-                # selects the runtime that still needs the separate row.
-                disabled: !!js "typeof ctx.get('tools')?.presentAs !== 'function'"
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
-                  # Keep subagent in the inherited tool layer so it can be hidden when
-                  # disabled. Model selection stays off in both versions: 0.2.1 spells the
-                  # field `modelSelectionSettings`, 0.2.2 renamed it to `modelSelection`,
-                  # and both default to false, so no key is set here.
+                  # Keep subagent in the inherited tool layer so it can be hidden when disabled.
+                  modelSelection: false
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:

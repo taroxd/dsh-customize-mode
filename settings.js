@@ -1,7 +1,7 @@
-import { createController, openProjection } from './controller.js';
+import { createController } from './controller.js';
 import { createDefaultPromptPreview } from './preview.js';
 import { clientRequestSchema } from './protocol.js';
-import { PRESET_ID, PROTOCOL, MAX_SETTINGS_BYTES, validateSettingsPayload } from './state.js';
+import { PRESET_ID, PROTOCOL, MAX_SETTINGS_BYTES, projectionDefinition, validateSettingsPayload } from './state.js';
 import { SettingsError, diagnostic, assertNotAborted, waitWithSignal } from './errors.js';
 
 export const SETTINGS_CHANNEL = '/api';
@@ -38,12 +38,12 @@ async function readEnvelope(request, signal, reportCleanupError) {
 
 export async function createHost(ctx, z, options) {
   const defaults = options.defaults;
-  const projection = await openProjection(ctx, z);
+  const handle = await ctx.sessionProjections.register(projectionDefinition(z));
   let controller;
   try {
-    controller = createController(ctx, defaults, projection);
+    controller = createController(ctx, defaults, handle);
   } catch (error) {
-    projection.dispose();
+    await handle.dispose();
     throw error;
   }
   const preview = options.previewDefaultPrompt ?? createDefaultPromptPreview(ctx);
@@ -120,7 +120,7 @@ export async function createHost(ctx, z, options) {
       return pending;
     } });
   } catch (error) {
-    controller.dispose();
+    await controller.dispose();
     throw error;
   }
   return () => disposal ??= (async () => {
@@ -130,6 +130,6 @@ export async function createHost(ctx, z, options) {
       await Promise.allSettled([...active]);
       await Promise.allSettled([...previews]);
     }
-    finally { controller.dispose(); }
+    finally { await controller.dispose(); }
   })();
 }
