@@ -105,6 +105,18 @@ test('package resources are local and both metadata translations are complete', 
   assert.ok(Buffer.byteLength(icon) <= 256 * 1024);
 });
 
+test('publishing authenticates through trusted publishing instead of a stored token', async () => {
+  const workflow = parseDocument(await readFile(new URL('.github/workflows/publish.yml', root), 'utf8')).toJS();
+  assert.equal(workflow.permissions['id-token'], 'write');
+  assert.equal(workflow.permissions.contents, 'read');
+  assert.deepEqual(workflow.jobs.publish.steps.at(-1), { run: 'npm publish --provenance' });
+  const commands = workflow.jobs.publish.steps.flatMap(step => (step.run ? [step.run] : []));
+  assert.ok(commands.some(command => command.startsWith('pnpm test')), 'The release must run the tests first');
+  for (const command of commands) {
+    assert.doesNotMatch(command, /NODE_AUTH_TOKEN|NPM_TOKEN|_authToken/);
+  }
+});
+
 test('authored files contain no home paths, credential values, or private key blocks', async () => {
   const ignored = new Set(['.git', 'node_modules', '.pnpm-store', 'runtime', 'artifacts', 'coverage']);
   const forbidden = [

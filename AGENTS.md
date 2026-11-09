@@ -47,3 +47,7 @@ The plugin requires DSH `0.2.2-rc.1` or newer. It reads the session projection t
 2. Run `pnpm test` and `pnpm build`.
 3. Run `pnpm pack --pack-destination artifacts`.
 4. Install into DSH via `plugin_manager`.
+5. Commit, tag `v<version>`, and push the tag; [publish.yml](<.github/workflows/publish.yml>) runs the tests and publishes to npm with trusted publishing.
+
+Publishing never uses a stored npm token. The workflow authenticates with the short-lived GitHub OIDC identity token, which npm exchanges for a publish token bound to this repository and the `publish.yml` workflow filename; rename or move the file only after updating the trusted publisher on npmjs.com. Do not add an `NPM_TOKEN` secret or a `.npmrc` with credentials.
+
