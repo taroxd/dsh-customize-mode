@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 export const HOST_MODULES = [
   'index.js',
+  'preset.js',
   'state.js',
   'policy.js',
   'controller.js',

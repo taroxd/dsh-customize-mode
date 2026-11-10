@@ -15,6 +15,7 @@
 | File | Purpose |
 | --- | --- |
 | [index.js](<index.js>) | Host plugin entry and lifecycle |
+| [preset.js](<preset.js>) | `customize-mode` preset declaration and language-dependent display copy |
 | [state.js](<state.js>) | Config validation and session log projection |
 | [policy.js](<policy.js>) | Scoped prompt, tool, and context registration |
 | [controller.js](<controller.js>) | Agent lifecycle, default capture, and session settings commits |
@@ -24,12 +25,13 @@
 | [protocol.js](<protocol.js>) | Connection request envelope schema |
 | [preview.js](<preview.js>) | Default system prompt preview |
 | [client.js](<client.js>) | Client UI components, state hooks, and translations |
-| [cordis.patch.yml](<cordis.patch.yml>) | Host entry and `customize-mode` preset definition |
+| [cordis.patch.yml](<cordis.patch.yml>) | Host plugin entry row |
 | [build-runtime.mjs](<build-runtime.mjs>) | Versioned Host runtime builder |
 
 ## Architecture & Invariants
 
 - **Activation**: Controlled solely by selecting the `customize-mode` preset.
+- **Preset declaration**: Registered from [preset.js](<preset.js>) through `agentPresets.register()` and never declared as a YAML row, because DSH translates a preset's display copy only for the four presets it ships (`BUILT_IN_PRESET_KEYS` in `dsh-agent-preset-registry`); a YAML row would pin one language. The name and description follow the `locale.preference` settings field, rewritten in place on `settings/document-updated` so the mounted revision never changes. Languages other than `zh*` use the English copy. The browser caches the roster it reads (`agentPresets/list`) and re-reads it only on mount, a `agent-preset-registry` settings update, or `connection/reset`, so an already-mounted mode chip keeps the previous language until the next roster read; the Host copy itself is always current.
 - **Session persistence**: Settings updates append paired `command/run` and `command/done` records to the session log and increment the revision synchronously. A hidden `commandview` renderer suppresses these internal records in the chat UI.
 - **Turn isolation**: Settings saved during a running turn are persisted immediately, while the active turn keeps its pinned snapshot until `turn/end`. The new settings apply on the next `turn/start`.
 - **Global defaults**: Stored per profile using `storageDomain` namespaced by `profileContext.dir`. Defaults are copied once when a fresh root session is created, and do not modify existing, resumed, or forked sessions.

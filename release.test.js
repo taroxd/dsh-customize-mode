@@ -8,38 +8,46 @@ import vm from 'node:vm';
 import { parseDocument } from 'yaml';
 import { buildRuntime, HOST_MODULES } from './build-runtime.mjs';
 import { PRESET_ID } from './state.js';
+import { plugins as presetPlugins, presetCopy } from './preset.js';
 
 const root = new URL('./', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
 const patch = await readFile(new URL('cordis.patch.yml', root), 'utf8');
-const document = parseDocument(patch, {
-  customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: expression => ({ expression }) }],
-});
+const document = parseDocument(patch);
 assert.deepEqual(document.errors, []);
 assert.deepEqual(document.warnings, []);
 const rows = document.toJS()[0].insert;
-const preset = rows.find(row => row.id === 'preset-customize-mode');
 
 function allRows(entries) {
   return entries.flatMap(row => [row, ...(row.group ? allRows(row.config) : [])]);
 }
 
-const plugins = allRows(preset.config.plugins);
+const plugins = allRows(presetPlugins);
 
-test('Loader entry and preset identity match the runtime exports and controller', () => {
+test('Loader entry owns the preset, which no YAML row may declare', () => {
   const host = rows.find(row => row.id === PRESET_ID);
   assert.ok(host, 'The Host plugin must be declared');
   assert.equal(host.name, manifest.exports['.']);
   assert.equal(host.name, `./runtime/${manifest.version}/index.js`);
-  assert.equal(preset.name, '@deepseek-ai/dsh-agent-preset');
-  assert.equal(preset.config.id, PRESET_ID);
+  assert.deepEqual(rows.map(row => row.id), [PRESET_ID], 'the language-dependent preset must not be a YAML row');
+});
+
+test('preset copy follows the interface language with an English baseline', () => {
+  assert.deepEqual([presetCopy('en').name, presetCopy('en').description],
+    ['Custom mode', 'Customize the system prompt, enabled tools, and extra context for each conversation.']);
+  assert.equal(presetCopy('zh').name, '自定义模式');
+  assert.equal(presetCopy('zh-CN').name, '自定义模式');
+  for (const locale of [undefined, null, '', 'ja', 'de', 'pt-BR', 'fr']) {
+    assert.equal(presetCopy(locale).name, 'Custom mode', String(locale));
+  }
+  assert.notEqual(presetCopy('en').description, presetCopy('zh').description);
 });
 
 test('preset selects the platform shell and keeps subagents in the inherited tool layer', () => {
   const shells = plugins.filter(row => ['tool-bash', 'tool-pwsh'].includes(row.id));
   assert.equal(shells.length, 2);
   for (const platform of ['win32', 'darwin', 'linux']) {
-    const active = shells.filter(row => !vm.runInNewContext(row.disabled.expression, { process: { platform } }));
+    const active = shells.filter(row => !vm.runInNewContext(row.disabled.__jsExpr, { process: { platform } }));
     assert.deepEqual(active.map(row => row.id), [platform === 'win32' ? 'tool-pwsh' : 'tool-bash']);
   }
   assert.equal(plugins.find(row => row.id === 'tool-subagent').config.modelSelection, false);

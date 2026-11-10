@@ -8,7 +8,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 - **Tool selection** — Enable only the tools you need, or disable all tools for a text-only chat.
 - **Extra context** — Toggle environment info and current time independently.
 - **Per-session & default settings** — Apply changes to the current conversation, or save them as the default for new Custom mode conversations.
-- **Bilingual UI** — Follows the DSH interface language (English and Chinese).
+- **Bilingual UI** — Follows the DSH interface language (English and Chinese), for the settings dialog and the mode name itself.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Then select the repository folder in **Add plugin**.
 
 ## Usage
 
-1. Start a new conversation and select **Custom mode** (`自定义模式`).
+1. Start a new conversation and select **Custom mode** (`自定义模式`). The preset's name and description follow the interface language chosen in **Settings → General → Language**; reload the page to refresh a mode picker that is already open.
 2. Click **Custom settings** in the input bar.
 3. Configure the prompt, tools, and context:
    - **Apply to session** — Updates the current conversation (takes effect on the next turn) and closes the dialog.
