@@ -8,10 +8,10 @@ export const HOST_MODULES = [
   'state.js',
   'policy.js',
   'controller.js',
-  'defaults.js',
+  'presets.js',
+  'bases.js',
   'settings.js',
   'errors.js',
-  'preview.js',
   'protocol.js',
 ];
 

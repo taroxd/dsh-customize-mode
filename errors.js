@@ -1,28 +1,32 @@
+/**
+ * Stable diagnostics. The browser translates each code; these English messages
+ * reach users only as the stop reason of a blocked turn and in Host logs.
+ */
 export const MESSAGES = Object.freeze({
-  INVALID_REQUEST: 'Invalid settings request.',
-  REQUEST_TOO_LARGE: 'Settings payload exceeds the 4 MiB limit.',
+  INVALID_REQUEST: 'The settings request is invalid.',
+  REQUEST_TOO_LARGE: 'The settings request exceeds the 4 MiB limit.',
   NOT_FOUND: 'Unknown settings endpoint.',
-  UNAVAILABLE: 'Custom mode settings are unavailable.',
+  UNAVAILABLE: 'Custom mode settings are unavailable right now.',
   UNAUTHORIZED: 'Browser authentication is required.',
-  FORBIDDEN: 'Only the authenticated browser owner may access these settings.',
+  FORBIDDEN: 'Only the authenticated browser owner can access these settings.',
   UNSUPPORTED_MEDIA_TYPE: 'Content-Type must be application/json.',
   ABORTED: 'The settings request was cancelled.',
-  SESSION_NOT_FOUND: 'The session is not open.',
-  ROOT_SESSION_REQUIRED: 'Settings are only available for root sessions.',
-  WRONG_PRESET: 'Select the Custom mode preset first.',
-  HUMAN_ONLY: 'Agent-initiated settings requests are not allowed.',
-  BUSY: 'Another settings update is being committed.',
-  REVISION_CONFLICT: 'Settings changed. Reload before saving.',
-  DEFAULTS_REVISION_CONFLICT: 'Global defaults changed. Reload before saving defaults.',
-  DEFAULTS_SAVE_FAILED: 'The global defaults were not saved.',
-  RESERVED_TOOL: 'The run_code transport cannot be included in a native tool allowlist.',
-  UNSUPPORTED_POLICY: 'The requested policy cannot hide one or more session-local tools.',
-  TOOL_VISIBILITY_CONFLICT: 'The requested tool visibility policy could not be applied.',
-  POLICY_UNAVAILABLE: 'The saved policy could not be applied. Model requests are blocked until it is repaired.',
-  CATALOG_STALE: 'The running session uses the last known tool catalog. Reload after it becomes idle.',
-  COMMIT_FAILED: 'The settings update was not committed.',
-  PREVIEW_FAILED: 'The default prompt template could not be loaded.',
-  SESSION_CHANGED: 'The session or its preset changed. Reopen the settings.',
+  SESSION_NOT_FOUND: 'The conversation is not open.',
+  ROOT_SESSION_REQUIRED: 'Settings can only be changed in a main conversation.',
+  WRONG_PRESET: 'The conversation is not in Custom mode.',
+  HUMAN_ONLY: 'Agents cannot change Custom mode settings.',
+  BUSY: 'Custom mode was still applying a settings change. Send the message again.',
+  REVISION_CONFLICT: 'The settings were changed elsewhere. Reload them first.',
+  SESSION_CHANGED: 'The conversation changed during the update.',
+  BASE_LOCKED: 'The base mode cannot change after the conversation starts.',
+  BASE_MODE_UNAVAILABLE: 'The base mode of this Custom mode conversation could not be loaded. Open Custom settings for details.',
+  PREVIEW_FAILED: 'The prompt and tools of the base mode could not be loaded.',
+  POLICY_UNAVAILABLE: 'Custom mode settings could not be applied. Open Custom settings to fix them, then send the message again.',
+  COMMIT_FAILED: 'The settings were not saved.',
+  PRESET_EXISTS: 'A preset with this title already exists.',
+  PRESET_NOT_FOUND: 'The preset no longer exists.',
+  PRESETS_FULL: 'The preset limit has been reached.',
+  PRESETS_SAVE_FAILED: 'The presets could not be saved.',
   SETTINGS_FAILED: 'The settings operation failed.',
 });
 
@@ -44,6 +48,10 @@ export function assertNotAborted(signal) {
   if (signal.aborted) throw new SettingsError('ABORTED');
 }
 
+/**
+ * Settle with an operation, or reject as soon as the signal aborts. The
+ * operation itself keeps running; owners that must drain it track it separately.
+ */
 export function waitWithSignal(operation, signal) {
   assertNotAborted(signal);
   return new Promise((resolve, reject) => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESET_ID } from './state.js';
-import { openPreset, presetCopy, plugins, PRESET_ORDER } from './preset.js';
+import { openPreset, presetCopy, PRESET_ORDER } from './preset.js';
 
 /**
  * Minimal Cordis host: `inject` starts its callback immediately with a child
@@ -55,16 +55,13 @@ function host(locale) {
   };
 }
 
-test('the declared preset carries the identity, order, and full plugin list', async () => {
+test('the declared preset carries its identity and order and composes nothing of its own', async () => {
   const f = host('en');
   const close = await openPreset(f.ctx);
   const [row] = f.registered;
   assert.equal(row.definition.id, PRESET_ID);
   assert.equal(row.definition.order, PRESET_ORDER);
-  assert.deepEqual(row.plugins, JSON.parse(JSON.stringify(plugins)));
-  assert.ok(plugins.length > 20, 'the whole composition must move with the preset');
-  assert.equal(row.plugins.filter(plugin => plugin.group).length, 3, 'groups survive the move out of YAML');
-  assert.ok(row.plugins.some(plugin => plugin.disabled?.__jsExpr), 'platform conditions survive the move out of YAML');
+  assert.deepEqual(row.plugins, [], 'every conversation is rebound to its base mode, which supplies the plugins');
   await close();
   assert.equal(f.registered.length, 0);
 });

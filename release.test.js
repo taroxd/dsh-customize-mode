@@ -4,11 +4,10 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import vm from 'node:vm';
 import { parseDocument } from 'yaml';
 import { buildRuntime, HOST_MODULES } from './build-runtime.mjs';
 import { PRESET_ID } from './state.js';
-import { plugins as presetPlugins, presetCopy } from './preset.js';
+import { presetCopy } from './preset.js';
 
 const root = new URL('./', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
@@ -17,12 +16,6 @@ const document = parseDocument(patch);
 assert.deepEqual(document.errors, []);
 assert.deepEqual(document.warnings, []);
 const rows = document.toJS()[0].insert;
-
-function allRows(entries) {
-  return entries.flatMap(row => [row, ...(row.group ? allRows(row.config) : [])]);
-}
-
-const plugins = allRows(presetPlugins);
 
 test('Loader entry owns the preset, which no YAML row may declare', () => {
   const host = rows.find(row => row.id === PRESET_ID);
@@ -33,30 +26,14 @@ test('Loader entry owns the preset, which no YAML row may declare', () => {
 });
 
 test('preset copy follows the interface language with an English baseline', () => {
-  assert.deepEqual([presetCopy('en').name, presetCopy('en').description],
-    ['Custom mode', 'Customize the system prompt, enabled tools, and extra context for each conversation.']);
+  assert.equal(presetCopy('en').name, 'Custom mode');
+  assert.match(presetCopy('en').description, /^Build on any mode/);
   assert.equal(presetCopy('zh').name, '自定义模式');
   assert.equal(presetCopy('zh-CN').name, '自定义模式');
   for (const locale of [undefined, null, '', 'ja', 'de', 'pt-BR', 'fr']) {
     assert.equal(presetCopy(locale).name, 'Custom mode', String(locale));
   }
   assert.notEqual(presetCopy('en').description, presetCopy('zh').description);
-});
-
-test('preset selects the platform shell and keeps subagents in the inherited tool layer', () => {
-  const shells = plugins.filter(row => ['tool-bash', 'tool-pwsh'].includes(row.id));
-  assert.equal(shells.length, 2);
-  for (const platform of ['win32', 'darwin', 'linux']) {
-    const active = shells.filter(row => !vm.runInNewContext(row.disabled.__jsExpr, { process: { platform } }));
-    assert.deepEqual(active.map(row => row.id), [platform === 'win32' ? 'tool-pwsh' : 'tool-bash']);
-  }
-  assert.equal(plugins.find(row => row.id === 'tool-subagent').config.modelSelection, false);
-  for (const id of ['tool-subagent', 'tool-subagent-fork']) {
-    const config = plugins.find(row => row.id === id).config;
-    assert.equal(config.agentPreset, undefined);
-    assert.equal(config.allowedAgentPresets, undefined);
-  }
-  assert.equal(plugins.some(row => row.id === 'tool-subagent-list-agents'), false, 'list_agents is owned by the control entry');
 });
 
 test('runtime build is reproducible and works from a directory with spaces', async t => {

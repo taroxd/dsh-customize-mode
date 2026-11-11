@@ -1,7 +1,7 @@
 import { createController } from './controller.js';
-import { createDefaultPromptPreview } from './preview.js';
+import { createBaseDescriber, listBases } from './bases.js';
 import { clientRequestSchema } from './protocol.js';
-import { PRESET_ID, PROTOCOL, MAX_SETTINGS_BYTES, projectionDefinition, validateSettingsPayload } from './state.js';
+import { PROTOCOL, MAX_SETTINGS_BYTES, projectionDefinition, validateSettingsPayload } from './state.js';
 import { SettingsError, diagnostic, assertNotAborted, waitWithSignal } from './errors.js';
 
 export const SETTINGS_CHANNEL = '/api';
@@ -12,6 +12,7 @@ const failure = error => ({ ok: false, error: diagnostic(error) });
 const respond = (rpcId, result, status = 200) => Response.json({ type: 'server-response', rpcId, result }, {
   status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
 });
+const presetList = store => ({ protocol: PROTOCOL, defaultTitle: store.defaultTitle, presets: store.presets });
 
 async function readEnvelope(request, signal, reportCleanupError) {
   if (Number(request.headers.get('content-length')) > MAX_ENVELOPE_BYTES) throw new SettingsError('REQUEST_TOO_LARGE');
@@ -36,21 +37,78 @@ async function readEnvelope(request, signal, reportCleanupError) {
   }
 }
 
-export async function createHost(ctx, z, options) {
-  const defaults = options.defaults;
-  const handle = await ctx.sessionProjections.register(projectionDefinition(z));
+/**
+ * Serve the settings endpoint for the browser owner.
+ * @param options.presets - Preset store of the current profile.
+ * @param options.describeBase - Reads the prompt template and tools of a base mode; tests replace it.
+ * @returns Disposer that detaches the route, drains requests, and removes every policy.
+ */
+export async function createHost(ctx, { presets, describeBase = createBaseDescriber(ctx) }) {
+  const projection = await ctx.sessionProjections.register(projectionDefinition);
   let controller;
   try {
-    controller = createController(ctx, defaults, handle);
+    controller = createController(ctx, { projection, presets });
   } catch (error) {
-    await handle.dispose();
+    await projection.dispose();
     throw error;
   }
-  const preview = options.previewDefaultPrompt ?? createDefaultPromptPreview(ctx);
   const closing = new AbortController();
   const active = new Set();
-  const previews = new Set();
+  const background = new Set();
   let disposal;
+
+  /** Describe a base mode. Teardown waits for the lease even when the request that started it was cancelled. */
+  async function describe(baseMode, signal) {
+    const operation = Promise.resolve().then(() => describeBase(baseMode, { signal }));
+    background.add(operation);
+    operation.then(() => background.delete(operation), () => background.delete(operation));
+    try {
+      return await waitWithSignal(() => operation, signal);
+    } catch (error) {
+      if (signal.aborted) throw new SettingsError('ABORTED');
+      if (error instanceof SettingsError) throw error;
+      ctx.logger.warn('customize-mode: base mode details could not be loaded', error);
+      throw new SettingsError('PREVIEW_FAILED');
+    }
+  }
+
+  async function read(agent, signal) {
+    const { config: { baseMode } } = await controller.read(agent, signal);
+    const [bases, catalog] = await Promise.all([
+      waitWithSignal(() => listBases(ctx.agentPresets), signal),
+      // The dialog still opens for an unavailable base, so the user can see the problem and pick another one.
+      describe(baseMode, signal).catch(error => {
+        if (error.code === 'BASE_MODE_UNAVAILABLE') return null;
+        throw error;
+      }),
+    ]);
+    controller.assertAccess(agent, signal);
+    const value = controller.view(agent);
+    if (value.config.baseMode !== baseMode) throw new SettingsError('REVISION_CONFLICT');
+    return { protocol: PROTOCOL, ...value, bases, catalog };
+  }
+
+  function perform(agent, operation, authorize, signal) {
+    switch (operation.action) {
+      case 'get': return read(agent, signal);
+      case 'set': return controller.set(agent, operation, signal).then(value => ({ protocol: PROTOCOL, ...value }));
+      case 'describe-base':
+        controller.assertAccess(agent, signal);
+        return describe(operation.baseMode, signal).then(catalog => ({ protocol: PROTOCOL, baseMode: operation.baseMode, ...catalog }));
+      case 'list-presets':
+        controller.assertAccess(agent, signal);
+        return presetList(presets.current());
+      case 'save-preset':
+        controller.assertAccess(agent, signal);
+        return presets.save(operation, authorize).then(presetList);
+      case 'delete-preset':
+        controller.assertAccess(agent, signal);
+        return presets.remove(operation.title, authorize).then(presetList);
+      case 'set-default-preset':
+        controller.assertAccess(agent, signal);
+        return presets.setDefault(operation.title, authorize).then(presetList);
+    }
+  }
 
   async function fetchSettings(request) {
     let rpcId = 'invalid-request';
@@ -59,7 +117,8 @@ export async function createHost(ctx, z, options) {
     const admission = ctx.connection.admit(request);
     if ('rejection' in admission) return respond(rpcId, failure(new SettingsError(admission.rejection === 401 ? 'UNAUTHORIZED' : 'FORBIDDEN')), admission.rejection);
     const peer = admission.peer;
-    if (peer !== ctx.connection.browserPeer || peer.principal.kind !== 'owner' || peer.signal.aborted) return respond(rpcId, failure(new SettingsError('FORBIDDEN')), 403);
+    const isOwner = () => peer === ctx.connection.browserPeer && peer.principal.kind === 'owner' && !peer.signal.aborted;
+    if (!isOwner()) return respond(rpcId, failure(new SettingsError('FORBIDDEN')), 403);
     if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') return respond(rpcId, failure(new SettingsError('UNSUPPORTED_MEDIA_TYPE')), 415);
     const signal = AbortSignal.any([request.signal, peer.signal, closing.signal]);
     try {
@@ -71,36 +130,12 @@ export async function createHost(ctx, z, options) {
       const { sessionId, request: operation } = validateSettingsPayload(parsed.data.payload);
       const agent = ctx.agents.get(sessionId);
       if (!agent) throw new SettingsError('SESSION_NOT_FOUND');
-      if (operation.action === 'set') return respond(rpcId, { ok: true, value: controller.set(agent, operation, signal) });
-      controller.assertAccess(agent, signal);
-      if (operation.action === 'set-defaults') {
-        const saved = await defaults.set(operation, () => {
-          if (peer !== ctx.connection.browserPeer || peer.principal.kind !== 'owner') throw new SettingsError('FORBIDDEN');
-          controller.assertAccess(agent, signal);
-        });
-        return respond(rpcId, { ok: true, value: { protocol: PROTOCOL, ...saved, action: 'set-defaults', warnings: [] } });
-      }
-      const revision = controller.snapshotOf(agent).revision;
-      let defaultPrompt;
-      try {
-        const operation = Promise.resolve().then(() => {
-          assertNotAborted(signal);
-          return preview(agent, { signal });
-        });
-        previews.add(operation);
-        operation.then(() => previews.delete(operation), () => previews.delete(operation));
-        defaultPrompt = await waitWithSignal(() => operation, signal);
-      }
-      catch (error) {
-        if (signal.aborted) throw new SettingsError('ABORTED');
-        ctx.logger.warn('customize-mode: default prompt preview failed', error);
-        throw new SettingsError('PREVIEW_FAILED');
-      }
-      assertNotAborted(signal);
-      if (ctx.agents.get(sessionId) !== agent || ctx.agentPresets.composedPreset(agent.ctx) !== PRESET_ID) throw new SettingsError('SESSION_CHANGED');
-      const value = controller.read(agent, signal);
-      if (value.revision !== revision) throw new SettingsError('REVISION_CONFLICT');
-      return respond(rpcId, { ok: true, value: { ...value, defaultPrompt, defaultsRevision: defaults.current().revision } });
+      // Preset writes queue behind each other, so each one checks access again when its turn comes.
+      const authorize = () => {
+        if (!isOwner()) throw new SettingsError('FORBIDDEN');
+        controller.assertAccess(agent, signal);
+      };
+      return respond(rpcId, { ok: true, value: await perform(agent, operation, authorize, signal) });
     } catch (error) {
       if (!(error instanceof SettingsError)) ctx.logger.warn('customize-mode: settings request failed', error);
       const status = error instanceof SettingsError ? (error.code === 'REQUEST_TOO_LARGE' ? 413 : error.httpStatus ?? 200) : 200;
@@ -128,7 +163,7 @@ export async function createHost(ctx, z, options) {
     try {
       await detach();
       await Promise.allSettled([...active]);
-      await Promise.allSettled([...previews]);
+      await Promise.allSettled([...background]);
     }
     finally { await controller.dispose(); }
   })();

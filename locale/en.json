@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Custom mode",
-    "description": "Customize the system prompt, enabled tools, and extra context for each conversation."
+    "description": "Build on any mode and customize its system prompt, tools, and extra context for each conversation. Save your settings as presets and pick one as the default."
   }
 }

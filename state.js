@@ -1,10 +1,17 @@
+import { z } from 'zod';
 import { SettingsError } from './errors.js';
 
 export const PROTOCOL = 'dsh-customize-mode/v1';
 export const PROJECTION_KEY = 'customizeMode';
 export const PRESET_ID = 'customize-mode';
+/** Base mode of new conversations without a default preset, and of records saved before base modes existed. */
+export const DEFAULT_BASE_MODE = 'standard';
 export const MAX_SETTINGS_BYTES = 4 * 1024 * 1024;
+export const MAX_TITLE_LENGTH = 80;
+export const MAX_NOTE_LENGTH = 1000;
+
 export const DEFAULT_CONFIG = Object.freeze({
+  baseMode: DEFAULT_BASE_MODE,
   overridePrompt: false,
   prompt: '',
   allowedTools: null,
@@ -12,42 +19,68 @@ export const DEFAULT_CONFIG = Object.freeze({
   includeTimeContext: true,
 });
 
-const objectWithKeys = (value, keys) => value !== null && typeof value === 'object' &&
-  !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
-const invalid = field => { throw new SettingsError('INVALID_REQUEST', { field }); };
+const controlCharacters = /[\u0000-\u001f\u007f]/u;
+const text = (max, label) => z.string().max(max).refine(value => !controlCharacters.test(value), `${label} contains control characters`);
 
-export function validateConfig(value) {
-  if (!objectWithKeys(value, Object.keys(DEFAULT_CONFIG))) invalid('config');
-  if (typeof value.overridePrompt !== 'boolean') invalid('overridePrompt');
-  if (typeof value.prompt !== 'string' || value.prompt.length > 1000000) invalid('prompt');
-  if (value.allowedTools !== null && (!Array.isArray(value.allowedTools) || value.allowedTools.length > 10000 ||
-      !value.allowedTools.every(name => typeof name === 'string' && name.length > 0 && name.length <= 256))) invalid('allowedTools');
-  for (const field of ['includeRuntimeContext', 'includeTimeContext']) {
-    if (typeof value[field] !== 'boolean') invalid(field);
-  }
-  return {
-    overridePrompt: value.overridePrompt,
-    prompt: value.prompt,
-    allowedTools: value.allowedTools === null ? null : [...new Set(value.allowedTools)],
-    includeRuntimeContext: value.includeRuntimeContext,
-    includeTimeContext: value.includeTimeContext,
-  };
+export const baseModeSchema = z.string().min(1).max(128)
+  .refine(value => !controlCharacters.test(value) && value.trim() === value, 'invalid preset id')
+  .refine(value => value !== PRESET_ID, 'Custom mode cannot be its own base mode');
+
+export const configSchema = z.strictObject({
+  baseMode: baseModeSchema,
+  overridePrompt: z.boolean(),
+  prompt: z.string().max(1_000_000),
+  allowedTools: z.array(text(256, 'tool name').min(1)).max(10_000).nullable(),
+  includeRuntimeContext: z.boolean(),
+  includeTimeContext: z.boolean(),
+}).transform(config => ({ ...config, allowedTools: config.allowedTools && [...new Set(config.allowedTools)] }));
+
+const titleSchema = z.string().transform(value => value.normalize('NFC').trim())
+  .pipe(text(MAX_TITLE_LENGTH, 'title').min(1));
+const noteSchema = z.string().transform(value => value.normalize('NFC').trim())
+  .pipe(z.string().max(MAX_NOTE_LENGTH));
+const revisionSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER - 1);
+
+export const requestSchema = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.literal('get') }),
+  z.strictObject({ action: z.literal('describe-base'), baseMode: baseModeSchema }),
+  z.strictObject({ action: z.literal('set'), expectedRevision: revisionSchema, config: configSchema }),
+  z.strictObject({ action: z.literal('list-presets') }),
+  z.strictObject({ action: z.literal('save-preset'), title: titleSchema, note: noteSchema, config: configSchema, overwrite: z.boolean() }),
+  z.strictObject({ action: z.literal('delete-preset'), title: titleSchema }),
+  z.strictObject({ action: z.literal('set-default-preset'), title: titleSchema.nullable() }),
+]);
+
+const payloadSchema = z.strictObject({
+  sessionId: text(256, 'session id').min(1),
+  request: requestSchema,
+});
+
+export const presetSchema = z.strictObject({
+  title: titleSchema,
+  note: noteSchema,
+  config: configSchema,
+  updatedAt: z.number().int().nonnegative(),
+});
+
+function parse(schema, value) {
+  const result = schema.safeParse(value);
+  if (!result.success) throw new SettingsError('INVALID_REQUEST', { field: result.error.issues[0]?.path.join('.') ?? '' });
+  return result.data;
 }
 
-export function validateRequest(request) {
-  if (objectWithKeys(request, ['action']) && request.action === 'get') return { action: 'get' };
-  if (!objectWithKeys(request, ['action', 'expectedRevision', 'config']) || !['set', 'set-defaults'].includes(request.action) ||
-      !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0 ||
-      request.expectedRevision >= Number.MAX_SAFE_INTEGER) invalid('request');
-  return { action: request.action, expectedRevision: request.expectedRevision, config: validateConfig(request.config) };
-}
+export const validateConfig = value => parse(configSchema, value);
 
 export function validateSettingsPayload(payload) {
-  if (!objectWithKeys(payload, ['sessionId', 'request']) || typeof payload.sessionId !== 'string' ||
-      payload.sessionId.length === 0 || payload.sessionId.length > 256 || /[\u0000-\u001f]/u.test(payload.sessionId)) invalid('sessionId');
-  const normalized = { sessionId: payload.sessionId, request: validateRequest(payload.request) };
+  const normalized = parse(payloadSchema, payload);
   if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > MAX_SETTINGS_BYTES) throw new SettingsError('REQUEST_TOO_LARGE');
   return normalized;
+}
+
+/** Records written before base modes existed ran on the Standard mode composition. */
+function recordConfig(config) {
+  const legacy = config !== null && typeof config === 'object' && !Array.isArray(config) && !Object.hasOwn(config, 'baseMode');
+  return validateConfig(legacy ? { baseMode: DEFAULT_BASE_MODE, ...config } : config);
 }
 
 export function initialState() {
@@ -56,7 +89,7 @@ export function initialState() {
 
 export function fold(state, event) {
   const data = event.data;
-  // Pin the active snapshot when a turn starts so mid-turn saves only affect later turns.
+  // Pin the snapshot when a turn starts so saves during the turn only affect later turns.
   if (event.type === 'turn/start') return { ...state, turn: { number: data.turn, snapshot: state.snapshot } };
   if (event.type === 'turn/end' && state.turn?.number === data.turn) return { ...state, turn: null };
   if (event.type === 'command/run' && data.name === PRESET_ID && data.source?.kind === 'user' && typeof data.commandId === 'string') {
@@ -68,31 +101,33 @@ export function fold(state, event) {
   if (data.kind === 'success' && typeof data.text === 'string') {
     try {
       const value = JSON.parse(data.text);
-      if (value.protocol === PROTOCOL && value.action === 'set' && Number.isSafeInteger(value.revision) && value.revision === snapshot.revision + 1) {
-        snapshot = { protocol: PROTOCOL, revision: value.revision, config: validateConfig(value.config) };
+      if (value.protocol === PROTOCOL && value.action === 'set' && value.revision === snapshot.revision + 1) {
+        snapshot = { protocol: PROTOCOL, revision: value.revision, config: recordConfig(value.config) };
       }
     } catch {}
   }
   return { ...state, snapshot, pending };
 }
 
-export function projectionDefinition(z) {
-  const configSchema = z.object({
-    overridePrompt: z.boolean(), prompt: z.string(), allowedTools: z.array(z.string()).nullable(),
-    includeRuntimeContext: z.boolean(), includeTimeContext: z.boolean(),
-  });
-  const viewSchema = z.object({ protocol: z.literal(PROTOCOL), revision: z.number().int().nonnegative(), config: configSchema });
-  return {
-    key: PROJECTION_KEY,
-    stateVersion: 2,
-    stateSchema: z.object({ snapshot: viewSchema, pending: z.array(z.string()),
-      turn: z.object({ number: z.number().int().nonnegative(), snapshot: viewSchema }).nullable() }),
-    init: initialState,
-    apply: fold,
-    wire: { viewSchema, view: state => state.snapshot },
-  };
-}
+const stateConfigSchema = z.object({
+  baseMode: z.string(), overridePrompt: z.boolean(), prompt: z.string(), allowedTools: z.array(z.string()).nullable(),
+  includeRuntimeContext: z.boolean(), includeTimeContext: z.boolean(),
+});
+const viewSchema = z.object({ protocol: z.literal(PROTOCOL), revision: z.number().int().nonnegative(), config: stateConfigSchema });
+
+export const projectionDefinition = Object.freeze({
+  key: PROJECTION_KEY,
+  // Version 3 adds the base mode to every snapshot.
+  stateVersion: 3,
+  stateSchema: z.object({
+    snapshot: viewSchema,
+    pending: z.array(z.string()),
+    turn: z.object({ number: z.number().int().nonnegative(), snapshot: viewSchema }).nullable(),
+  }),
+  init: initialState,
+  apply: fold,
+  wire: { viewSchema, view: state => state.snapshot },
+});
 
 export const isRestricted = config => config.allowedTools !== null;
 export const permits = (config, name) => !isRestricted(config) || config.allowedTools.includes(name);
-export const deniedVisible = (config, schemas) => schemas.filter(tool => !permits(config, tool.name)).map(tool => tool.name);
